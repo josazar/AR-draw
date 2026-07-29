@@ -1,13 +1,13 @@
 // Headless smoke + unit test.
 //
-// The app cannot be fully tested without a phone camera and a real hand, but a surprising amount
-// is checkable in a desktop browser: stubbing the 8th Wall engine lets the real pipeline module
-// run, and the geometry helpers and tube builder are pure enough to assert on directly.
+// The app cannot be fully tested without a phone camera and real SLAM, but a surprising amount is
+// checkable in a desktop browser: stubbing the 8th Wall engine lets the real pipeline module run,
+// and the smoothing and tube builder are pure enough to assert on directly.
 //
 // Usage:
 //   npm i -D playwright && npx playwright install chromium   (once)
 //   npm run serve                                            (in another shell)
-//   node test/smoke.mjs http://127.0.0.1:5173/
+//   npm run smoke -- http://127.0.0.1:5173/
 //
 // CHROMIUM_PATH can override the browser binary.
 import {chromium} from 'playwright'
@@ -33,7 +33,8 @@ const stubEngine = () => {
       xrScene: () => {
         if (!xrScene) {
           const scene = new window.THREE.Scene()
-          const camera = new window.THREE.PerspectiveCamera(60, 1, 0.01, 100)
+          const camera = new window.THREE.PerspectiveCamera(60, 390 / 844, 0.01, 100)
+          camera.updateProjectionMatrix()
           scene.add(camera)
           xrScene = {scene, camera, renderer: null}
           // Exposed so a test can move the camera, standing in for the phone moving.
@@ -49,7 +50,6 @@ const stubEngine = () => {
         window.__xrControllerConfig = opts
       },
     },
-    CameraPixelArray: {pipelineModule: () => ({name: 'camerapixelarray'})},
   }
   window.XRExtras = {
     FullWindowCanvas: {pipelineModule: () => ({name: 'fwc'})},
@@ -81,9 +81,17 @@ await page.route(/(xr\.js|xr-slam\.js|xrextras\.js|landing-page\.js)(\?|$)/, (ro
 await page.addInitScript(stubEngine)
 await page.goto(URL_UNDER_TEST, {waitUntil: 'load'})
 
-// --- pipeline wiring --------------------------------------------------------------------------
+// --- pipeline wiring ----------------------------------------------------------------------------
 const registered = await page.evaluate(() => (window.__mods || []).map((m) => m.name))
 record(`${registered.includes('ardraw') ? 'PASS' : 'FAIL'} pipeline registers ardraw :: ${registered.join(',')}`)
+
+// Hand tracking is gone: MediaPipe read ordinary room geometry as a pinch, so filming a room
+// started drawing by itself. Nothing should pull the camera pixels off the GPU any more either --
+// that readback existed only to feed inference.
+record(
+  `${!registered.includes('camerapixelarray') ? 'PASS' : 'FAIL'} no camera pixel readback remains` +
+    ` :: ${registered.join(',')}`
+)
 
 // Scale must be locked at init ('responsive'), not re-estimated as the device moves
 // ('absolute'). A refined scale estimate resizes everything already drawn, which is what made
@@ -106,195 +114,181 @@ const startResult = await page.evaluate(() => {
 })
 record(`${startResult.ok ? 'PASS' : 'FAIL'} onStart :: ${startResult.why || 'scene + controls initialised'}`)
 
-// --- MediaPipe actually loads -------------------------------------------------------------------
-const trackerStatus = await page
-  .waitForFunction(
-    () => {
-      const t = document.getElementById('status').textContent
-      return t.includes('Montrez') || t.includes('indisponible') ? t : false
-    },
-    {timeout: 120000}
-  )
-  .then((h) => h.jsonValue())
-  .catch((e) => 'TIMEOUT: ' + e.message)
-const trackerOk = trackerStatus.includes('Montrez')
+// Nothing to download and no model to load, so the app is usable immediately.
+const readyStatus = await page.evaluate(() => document.getElementById('status').textContent)
 record(
-  `${trackerOk ? 'PASS' : 'FAIL'} hand tracker loads :: ${trackerStatus}` +
-    (trackerOk ? '' : ` / ${await page.evaluate(() => document.getElementById('hint').textContent)}`)
+  `${readyStatus.includes('Appui long') ? 'PASS' : 'FAIL'} ready with no asset download` +
+    ` :: "${readyStatus}"`
 )
 
-// --- onUpdate survives real frames and every control ---------------------------------------------
+// --- onUpdate and the controls --------------------------------------------------------------
 const updateResult = await page.evaluate(() => {
   const mod = window.__mods.find((m) => m.name === 'ardraw')
-  const cols = 320
-  const rows = 240
-  const pixels = new Uint8Array(cols * rows * 4).fill(128)
   try {
-    // No hand in a flat grey frame, so this drives the "hand lost" branch through real inference.
-    for (let i = 0; i < 5; i++) {
-      mod.onUpdate({processGpuResult: {camerapixelarray: {pixels, cols, rows}}})
-    }
-    for (const id of ['btn-debug', 'btn-color', 'btn-depth', 'btn-undo', 'btn-clear']) {
+    for (let i = 0; i < 5; i++) mod.onUpdate({processCpuResult: {}})
+    for (const id of ['btn-debug', 'btn-color', 'btn-undo', 'btn-clear']) {
       document.getElementById(id).click()
     }
-    // Once more with the debug overlay enabled, to cover the overlay drawing path.
-    mod.onUpdate({processGpuResult: {camerapixelarray: {pixels, cols, rows}}})
+    mod.onUpdate({processCpuResult: {reality: {trackingStatus: 'NORMAL'}}})
     return {ok: true}
   } catch (e) {
     return {ok: false, why: String((e && e.stack) || e)}
   }
 })
-record(`${updateResult.ok ? 'PASS' : 'FAIL'} onUpdate + controls :: ${updateResult.why || '5 frames, 6 controls'}`)
+record(`${updateResult.ok ? 'PASS' : 'FAIL'} onUpdate + controls :: ${updateResult.why || '6 frames, 4 controls'}`)
 
-// --- pure logic ----------------------------------------------------------------------------------
+// --- depth slider -------------------------------------------------------------------------------
+{
+  const initial = await page.evaluate(() => ({
+    depth: window.__ardraw.state.drawDepth,
+    label: document.getElementById('depth-value').textContent,
+    dot: document.getElementById('reticle-dot').style.width,
+  }))
+  record(
+    `${Math.abs(initial.depth - 0.3) < 1e-9 ? 'PASS' : 'FAIL'} the slider starts at 30 cm` +
+      ` :: ${initial.depth}m "${initial.label}"`
+  )
+
+  const far = await page.evaluate(() => {
+    const slider = document.getElementById('depth-slider')
+    slider.value = '200'
+    slider.dispatchEvent(new Event('input', {bubbles: true}))
+    return {
+      depth: window.__ardraw.state.drawDepth,
+      label: document.getElementById('depth-value').textContent,
+      dot: parseFloat(document.getElementById('reticle-dot').style.width),
+    }
+  })
+  record(
+    `${Math.abs(far.depth - 2) < 1e-9 ? 'PASS' : 'FAIL'} the slider sets the draw distance` +
+      ` :: ${far.depth}m`
+  )
+  record(
+    `${far.label.includes('m') && !far.label.includes('cm') ? 'PASS' : 'FAIL'}` +
+      ` distances past a metre are labelled in metres :: "${far.label}"`
+  )
+  // The preview dot is the slider's visible consequence: further away means a thinner tube.
+  record(
+    `${far.dot < parseFloat(initial.dot) ? 'PASS' : 'FAIL'} the preview dot shrinks with distance` +
+      ` :: ${initial.dot} -> ${far.dot}px`
+  )
+
+  // A stroke drawn far away must land far away.
+  const reach = await page.evaluate(() => {
+    const mod = window.__mods.find((m) => m.name === 'ardraw')
+    const {camera} = window.__xrSceneRef
+    camera.position.set(0, 0, 0)
+    camera.quaternion.identity()
+    camera.updateMatrixWorld()
+    mod.onUpdate({processCpuResult: {}})
+    return window.__ardraw.state.drawDepth
+  })
+  record(`${Math.abs(reach - 2) < 1e-9 ? 'PASS' : 'FAIL'} the distance survives a frame :: ${reach}`)
+
+  await page.evaluate(() => {
+    const slider = document.getElementById('depth-slider')
+    slider.value = '30'
+    slider.dispatchEvent(new Event('input', {bubbles: true}))
+  })
+}
+
+// --- touch drawing: press and hold, then move the phone -----------------------------------------
+{
+  const before = await page.evaluate(() => window.__ardraw.state.strokes)
+
+  await page.mouse.move(195, 422)
+  await page.mouse.down()
+  const armed = await page.evaluate(() => document.getElementById('reticle').className)
+  await page.waitForTimeout(500)
+  const drawingNow = await page.evaluate(() => window.__ardraw.state.touchDrawing)
+
+  // Walk the camera forward, which is what actually lays down the tube in this mode.
+  await page.evaluate(() => {
+    const mod = window.__mods.find((m) => m.name === 'ardraw')
+    const {camera} = window.__xrSceneRef
+    for (let i = 1; i <= 20; i++) {
+      camera.position.set(i * 0.05, 1.4, 0)
+      camera.updateMatrixWorld()
+      mod.onUpdate({processCpuResult: {}})
+    }
+  })
+
+  await page.mouse.up()
+  const after = await page.evaluate(() => window.__ardraw.state)
+
+  record(`${armed === 'armed' ? 'PASS' : 'FAIL'} the reticle arms on press :: "${armed}"`)
+  record(`${drawingNow ? 'PASS' : 'FAIL'} holding past the threshold starts a stroke`)
+  record(
+    `${after.strokes === before + 1 ? 'PASS' : 'FAIL'} releasing closes exactly one tube` +
+      ` :: ${before} -> ${after.strokes}`
+  )
+  record(`${!after.touchDrawing ? 'PASS' : 'FAIL'} drawing stops on release`)
+
+  // A quick tap must not leave a mark.
+  const beforeTap = after.strokes
+  await page.mouse.move(195, 422)
+  await page.mouse.down()
+  await page.waitForTimeout(80)
+  await page.mouse.up()
+  const afterTap = await page.evaluate(() => window.__ardraw.state.strokes)
+  record(`${afterTap === beforeTap ? 'PASS' : 'FAIL'} a short tap draws nothing :: ${afterTap}`)
+
+  // Pressing outside the centre zone must not arm either.
+  await page.mouse.move(30, 120)
+  await page.mouse.down()
+  const outside = await page.evaluate(() => document.getElementById('reticle').className)
+  await page.waitForTimeout(500)
+  const outsideDrawing = await page.evaluate(() => window.__ardraw.state.touchDrawing)
+  await page.mouse.up()
+  record(
+    `${outside === '' && !outsideDrawing ? 'PASS' : 'FAIL'} pressing outside the zone does nothing` +
+      ` :: "${outside}" drawing=${outsideDrawing}`
+  )
+
+  // Dragging the slider must never start a stroke, even though it is a long press.
+  const sliderBox = await page.evaluate(() => {
+    const r = document.getElementById('depth-slider').getBoundingClientRect()
+    return {x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2)}
+  })
+  await page.mouse.move(sliderBox.x, sliderBox.y)
+  await page.mouse.down()
+  await page.waitForTimeout(500)
+  const sliderDrawing = await page.evaluate(() => window.__ardraw.state.touchDrawing)
+  await page.mouse.up()
+  record(`${!sliderDrawing ? 'PASS' : 'FAIL'} holding the slider does not draw`)
+}
+
+// --- pure logic -----------------------------------------------------------------------------
 const unit = await page.evaluate(async () => {
-  const [{imageToScreen, pinchRatio, estimateDepthMeters}, {createDrawing}, {createOneEuroFilter}] =
-    await Promise.all([
-      import('/src/hand-tracking.js'),
-      import('/src/tube-drawing.js'),
-      import('/src/one-euro.js'),
-    ])
+  const [{createDrawing}, {createOneEuroFilter}, {smoothPolyline}] = await Promise.all([
+    import('/src/tube-drawing.js'),
+    import('/src/one-euro.js'),
+    import('/src/smoothing.js'),
+  ])
   const THREE = window.THREE
   const out = []
   const check = (name, cond, detail = '') =>
     out.push(`${cond ? 'PASS' : 'FAIL'} ${name}${detail ? ' :: ' + detail : ''}`)
 
-  // Image -> screen mapping. These are the real numbers the engine reported on an iPhone 13
-  // viewport: a 640x480 camera image scaled to cover a 376x640 canvas, so it overflows
-  // horizontally and is cropped.
-  const VP = {offsetX: -238.6666, offsetY: 0, width: 853.3333, height: 640}
-  const CW = 376
-  const CH = 640
-  const map = (x, y) => imageToScreen(x, y, VP, CW, CH)
-
-  const centre = map(0.5, 0.5)
-  check(
-    'the image centre lands at the screen centre',
-    Math.abs(centre.u - 0.5) < 1e-3 && Math.abs(centre.v - 0.5) < 1e-3,
-    `${centre.u.toFixed(4)},${centre.v.toFixed(4)}`
-  )
-
-  // These two encode the behaviour the whole feature depends on: moving the hand right must move
-  // the tube right, and moving it up must move it up. An inverted axis here is exactly the bug
-  // that shows up as a tube going the wrong way.
-  check('moving right in the image moves right on screen', map(0.6, 0.5).u > map(0.4, 0.5).u)
-  check('moving up in the image moves up on screen', map(0.5, 0.4).v < map(0.5, 0.6).v)
-
-  // The image is wider than the canvas, so its edges fall outside the visible area. That is the
-  // crop, and it must not be clamped away -- a hand near the edge is genuinely off-screen.
-  check('the cropped left edge maps outside the screen', map(0, 0.5).u < 0, map(0, 0.5).u.toFixed(3))
-  check('the cropped right edge maps outside the screen', map(1, 0.5).u > 1, map(1, 0.5).u.toFixed(3))
-
-  // Vertically the image exactly fills the canvas in this configuration.
-  check('the image top maps to the screen top', Math.abs(map(0.5, 0).v) < 1e-9)
-  check('the image bottom maps to the screen bottom', Math.abs(map(0.5, 1).v - 1) < 1e-9)
-
-  // No viewport yet on the first frames; must not throw or produce NaN.
-  const fallback = imageToScreen(0.3, 0.6, null, 0, 0)
-  check(
-    'falls back to identity before the viewport is known',
-    Math.abs(fallback.u - 0.3) < 1e-9 && Math.abs(fallback.v - 0.6) < 1e-9
-  )
-
-  // Synthetic hand: `scale` shrinks it as if it moved away, `gap` opens the thumb-index pinch.
-  const hand = (scale, gap) => {
-    const lm = Array.from({length: 21}, () => ({x: 0.5, y: 0.5, z: 0}))
-    lm[0] = {x: 0.5, y: 0.5 + 0.2 * scale, z: 0}    // wrist
-    lm[9] = {x: 0.5, y: 0.5, z: 0}                  // middle mcp
-    lm[5] = {x: 0.5 - 0.06 * scale, y: 0.5, z: 0}   // index mcp
-    lm[17] = {x: 0.5 + 0.06 * scale, y: 0.5, z: 0}  // pinky mcp
-    lm[8] = {x: 0.5, y: 0.4, z: 0}                  // index tip
-    lm[4] = {x: 0.5 + gap * scale, y: 0.4, z: 0}    // thumb tip
-    return lm
-  }
-
-  // The whole point of normalising by hand size: the threshold must not depend on distance.
-  const near = pinchRatio(hand(1.0, 0.02), 320, 320)
-  const far = pinchRatio(hand(0.5, 0.02), 320, 320)
-  check('pinchRatio is scale invariant', Math.abs(near - far) < 0.02, `${near.toFixed(3)} vs ${far.toFixed(3)}`)
-  const closed = pinchRatio(hand(1, 0.01), 320, 320)
-  const open = pinchRatio(hand(1, 0.5), 320, 320)
-  check('a closed pinch is below the close threshold', closed < 0.38, closed.toFixed(3))
-  check('an open hand is above the open threshold', open > 0.55, open.toFixed(3))
-
-  // --- metric depth -------------------------------------------------------------------------
-  // Build a fronto-parallel hand of a known real size at a known distance, project it with a
-  // known camera, and check the estimator recovers that distance.
-  const P5 = 1 / Math.tan((60 * Math.PI / 180) / 2)  // 60 degree vertical fov
-  const W_OVER_H = 376 / 640
-
-  // Metres, relative to the hand centre.
-  const worldHand = (scale) => {
-    const w = Array.from({length: 21}, () => ({x: 0, y: 0, z: 0}))
-    w[0] = {x: 0, y: -0.09 * scale, z: 0}    // wrist
-    w[5] = {x: -0.04 * scale, y: 0, z: 0}    // index mcp
-    w[9] = {x: 0, y: 0, z: 0}                // middle mcp
-    w[17] = {x: 0.04 * scale, y: 0, z: 0}    // pinky mcp
-    return w
-  }
-
-  // Project that hand onto the screen at distance d. A length L covers L*P5/(2d) of the screen
-  // height; horizontal offsets are divided by the aspect to express them in width fractions.
-  const projectHand = (world, d) => {
-    const perMetre = P5 / (2 * d)
-    return world.map(({x, y}) => ({
-      u: 0.5 + (x * perMetre) / W_OVER_H,
-      v: 0.5 - y * perMetre,
-    }))
-  }
-
-  for (const d of [0.3, 0.5, 1.0]) {
-    const w = worldHand(1)
-    const got = estimateDepthMeters(projectHand(w, d), w, W_OVER_H, P5)
-    check(
-      `metric depth recovers ${d} m`,
-      Math.abs(got - d) / d < 0.01,
-      `got ${got === null ? 'null' : got.toFixed(4)}`
-    )
-  }
-
-  // Self-calibration: a big hand and a small hand at the same distance must both read that
-  // distance. This is what removed the hand-tuned constant.
-  const big = worldHand(1.4)
-  const small = worldHand(0.7)
-  const dBig = estimateDepthMeters(projectHand(big, 0.6), big, W_OVER_H, P5)
-  const dSmall = estimateDepthMeters(projectHand(small, 0.6), small, W_OVER_H, P5)
-  check(
-    'depth is independent of how big the hand is',
-    Math.abs(dBig - 0.6) / 0.6 < 0.01 && Math.abs(dSmall - 0.6) / 0.6 < 0.01,
-    `big ${dBig.toFixed(3)} / small ${dSmall.toFixed(3)}`
-  )
-
-  // A degenerate hand (all landmarks coincident) must not produce a bogus number.
-  check(
-    'degenerate hand geometry yields null, not nonsense',
-    estimateDepthMeters(
-      Array.from({length: 21}, () => ({u: 0.5, v: 0.5})),
-      Array.from({length: 21}, () => ({x: 0, y: 0, z: 0})),
-      W_OVER_H, P5
-    ) === null
-  )
-
-  // --- One Euro filter ------------------------------------------------------------------------
-  const settle = (f, x, n = 60, startMs = 0) => {
-    let out = 0
-    for (let i = 0; i < n; i++) out = f.filter(x, startMs + i * 16.7)
-    return out
+  // --- One Euro filter --------------------------------------------------------------------------
+  const settle = (f, x, n = 60) => {
+    let value = 0
+    for (let i = 0; i < n; i++) value = f.filter(x, i * 16.7)
+    return value
   }
   check(
     'the filter converges to a constant input',
     Math.abs(settle(createOneEuroFilter({minCutoff: 1, beta: 0.8, derivativeCutoff: 1}), 0.7) - 0.7) < 1e-3
   )
 
-  // The point of the filter: a hand held still is smoothed hard, a hand moving fast is not.
+  // The point of the filter: a still pose is smoothed hard, a moving one is not.
   const jitter = createOneEuroFilter({minCutoff: 1, beta: 0.8, derivativeCutoff: 1})
   let inputSwing = 0
   let outputSwing = 0
   let prevIn = null
   let prevOut = null
   for (let i = 0; i < 120; i++) {
-    // Deterministic alternating noise around a still position -- no Math.random, so the test
-    // cannot flake.
+    // Deterministic alternating noise -- no Math.random, so the test cannot flake.
     const x = 0.5 + (i % 2 ? 0.01 : -0.01)
     const y = jitter.filter(x, i * 16.7)
     if (i > 40) {
@@ -305,26 +299,21 @@ const unit = await page.evaluate(async () => {
     prevOut = y
   }
   check(
-    'jitter on a still hand is attenuated at least 5x',
+    'jitter on a still pose is attenuated at least 5x',
     outputSwing * 5 < inputSwing,
     `input ${inputSwing.toFixed(3)} -> output ${outputSwing.toFixed(3)}`
   )
 
-  // ...while a genuine fast movement still gets through with little lag.
   const ramp = createOneEuroFilter({minCutoff: 1, beta: 0.8, derivativeCutoff: 1})
   let last = 0
   for (let i = 0; i < 60; i++) last = ramp.filter(i * 0.01, i * 16.7)
-  const target = 59 * 0.01
   check(
     'a fast movement is tracked with little lag',
-    Math.abs(last - target) < 0.05,
-    `target ${target.toFixed(3)} vs ${last.toFixed(3)}`
+    Math.abs(last - 59 * 0.01) < 0.05,
+    `target ${(59 * 0.01).toFixed(3)} vs ${last.toFixed(3)}`
   )
 
-  // --- centreline smoothing -------------------------------------------------------------------
-  const {smoothPolyline} = await import('/src/smoothing.js')
-
-  // A zigzag along x: alternating points off the axis, which is what a jittery finger produces.
+  // --- centreline smoothing ---------------------------------------------------------------------
   const zigzag = () =>
     Array.from({length: 21}, (_, i) => new THREE.Vector3(i * 0.02, i % 2 ? 0.01 : -0.01, 0))
 
@@ -358,18 +347,17 @@ const unit = await page.evaluate(async () => {
     `y1=${rawZig[1].y}`
   )
 
-  // Repeated calls from the same raw points must be identical -- the scratch buffers are reused,
-  // so a leak between calls would show up here.
   const again = smoothPolyline(rawZig, 4, 0.5)
   check(
     'smoothing is deterministic across calls',
     again.every((p, i) => p.distanceTo(smoothed[i]) < 1e-12)
   )
+  check(
+    'smoothing a 2-point line is a no-op',
+    smoothPolyline([new THREE.Vector3(), new THREE.Vector3(1, 0, 0)], 4, 0.5).length === 2
+  )
 
-  const twoPoints = [new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 0, 0)]
-  check('smoothing a 2-point line is a no-op', smoothPolyline(twoPoints, 4, 0.5).length === 2)
-
-  // Tube builder.
+  // --- tube builder -----------------------------------------------------------------------------
   const scene = new THREE.Scene()
   const drawing = createDrawing(scene)
   check('starts idle', !drawing.isDrawing && drawing.strokeCount === 0)
@@ -392,9 +380,8 @@ const unit = await page.evaluate(async () => {
   )
 
   drawing.end()
-  check('end() finalises exactly one stroke', !drawing.isDrawing && drawing.strokeCount === 1, `count=${drawing.strokeCount}`)
+  check('end() finalises exactly one stroke', !drawing.isDrawing && drawing.strokeCount === 1)
 
-  // A pinch with no movement should not leave a blob floating in the scene.
   drawing.begin(new THREE.Vector3(5, 5, 5))
   drawing.end()
   check('a stroke that never moved is discarded', drawing.strokeCount === 1, `count=${drawing.strokeCount}`)
@@ -411,64 +398,7 @@ unit.forEach(record)
 const pageErrors = await page.evaluate(() => window.__errors)
 record(`${pageErrors.length === 0 ? 'PASS' : 'FAIL'} no uncaught page errors :: ${JSON.stringify(pageErrors)}`)
 
-// --- touch drawing: press and hold, then move the phone -----------------------------------------
-{
-  const before = await page.evaluate(() => window.__ardraw.state.strokes)
-
-  // Press in the middle of the screen and hold past the long-press threshold.
-  await page.mouse.move(195, 422)
-  await page.mouse.down()
-  const armed = await page.evaluate(() => document.getElementById('reticle').className)
-  await page.waitForTimeout(500)
-  const drawingNow = await page.evaluate(() => window.__ardraw.state.touchDrawing)
-
-  // Now walk the camera forward, which is what actually lays down the tube in this mode.
-  await page.evaluate(() => {
-    const mod = window.__mods.find((m) => m.name === 'ardraw')
-    const {camera} = window.__xrSceneRef
-    for (let i = 1; i <= 12; i++) {
-      camera.position.set(i * 0.05, 1.4, 0)
-      camera.updateMatrixWorld()
-      mod.onUpdate({processGpuResult: {}})
-    }
-  })
-
-  await page.mouse.up()
-  const after = await page.evaluate(() => window.__ardraw.state)
-
-  record(`${armed === 'armed' ? 'PASS' : 'FAIL'} the reticle arms on press :: "${armed}"`)
-  record(`${drawingNow ? 'PASS' : 'FAIL'} holding past the threshold starts a stroke`)
-  record(
-    `${after.strokes === before + 1 ? 'PASS' : 'FAIL'} releasing closes exactly one tube` +
-      ` :: ${before} -> ${after.strokes}`
-  )
-  record(`${!after.touchDrawing ? 'PASS' : 'FAIL'} touch drawing stops on release`)
-
-  // A quick tap must not leave a mark.
-  const beforeTap = after.strokes
-  await page.mouse.move(195, 422)
-  await page.mouse.down()
-  await page.waitForTimeout(80)
-  await page.mouse.up()
-  const afterTap = await page.evaluate(() => window.__ardraw.state.strokes)
-  record(`${afterTap === beforeTap ? 'PASS' : 'FAIL'} a short tap draws nothing :: ${afterTap}`)
-
-  // Pressing outside the centre zone must not arm either.
-  await page.mouse.move(30, 120)
-  await page.mouse.down()
-  const outside = await page.evaluate(() => document.getElementById('reticle').className)
-  await page.waitForTimeout(500)
-  const outsideDrawing = await page.evaluate(() => window.__ardraw.state.touchDrawing)
-  await page.mouse.up()
-  record(
-    `${outside === '' && !outsideDrawing ? 'PASS' : 'FAIL'} pressing outside the zone does nothing` +
-      ` :: "${outside}" drawing=${outsideDrawing}`
-  )
-}
-
 // --- the scale escape hatch ---------------------------------------------------------------------
-// Scale cannot be changed after XR8.run(), so comparing the two modes on a real device depends on
-// this query parameter working.
 {
   const altPage = await browser.newPage({viewport: {width: 390, height: 844}})
   await altPage.route(/(xr\.js|xr-slam\.js|xrextras\.js|landing-page\.js)(\?|$)/, (r) => r.abort())
@@ -481,43 +411,6 @@ record(`${pageErrors.length === 0 ? 'PASS' : 'FAIL'} no uncaught page errors :: 
       ` :: ${JSON.stringify(altConfig)}`
   )
   await altPage.close()
-}
-
-// --- regression: a missing model must fail, not hang --------------------------------------------
-// Handing MediaPipe a URL it cannot load does not reject -- it logs "Unable to open zip archive"
-// and the promise never settles. That shipped once and stranded the app on its loading message
-// forever, which from the outside is indistinguishable from a slow download. A host that answers
-// a missing file with an HTML 404 page reproduces it exactly.
-{
-  const hostilePage = await browser.newPage({viewport: {width: 390, height: 844}})
-  await hostilePage.route(/(xr\.js|xr-slam\.js|xrextras\.js|landing-page\.js)(\?|$)/, (r) => r.abort())
-  await hostilePage.route(/hand_landmarker\.task/, (route) =>
-    route.fulfill({status: 404, contentType: 'text/html', body: '<html>Not found</html>'})
-  )
-  await hostilePage.addInitScript(stubEngine)
-  await hostilePage.goto(URL_UNDER_TEST, {waitUntil: 'load'})
-  await hostilePage.evaluate(() => {
-    const mod = (window.__mods || []).find((m) => m.name === 'ardraw')
-    mod?.onStart({canvas: document.getElementById('camerafeed')})
-  })
-
-  const settled = await hostilePage
-    .waitForFunction(
-      () => {
-        const t = document.getElementById('status').textContent
-        return t.includes('indisponible') ? t : false
-      },
-      {timeout: 90000}
-    )
-    .then(() => true)
-    .catch(() => false)
-
-  const detail = await hostilePage.evaluate(() => document.getElementById('hint').textContent)
-  record(
-    `${settled ? 'PASS' : 'FAIL'} a missing model reports an error instead of hanging` +
-      (settled ? ` :: ${detail.split('\n')[1] || detail}`.slice(0, 90) : ' :: still loading after 90s')
-  )
-  await hostilePage.close()
 }
 
 await browser.close()

@@ -14,21 +14,25 @@ Trois briques, parce qu'aucune ne fait le travail seule :
 | Brique | Rôle | Technologie |
 |---|---|---|
 | Suivi du monde (SLAM) | Où se trouve le téléphone dans la pièce, à 6 degrés de liberté | **8th Wall engine binary** |
-| Suivi de la main | Où se trouve le bout du doigt à l'écran, et le pincement | **MediaPipe HandLandmarker** |
 | Rendu | Les tubes | **three.js 0.183** (`TubeGeometry`) |
 
 Le principe qui fait tenir l'ensemble, dans `src/app.js` :
 
-> MediaPipe donne un point **2D** sur l'écran. On lance un rayon depuis la caméra à travers ce
-> point, et on place le point du tube à une certaine distance le long de ce rayon. Comme la
-> position de la caméra est exprimée dans le repère monde du SLAM, le point obtenu est **lui aussi
-> dans le repère monde**. C'est ce qui fait que le tube reste en place quand le téléphone bouge.
+> Le pinceau se tient à une distance fixe droit devant l'objectif. On calcule sa position en
+> lançant un rayon depuis la caméra suivie par le SLAM, et comme la pose de cette caméra est
+> exprimée dans le repère monde, le point obtenu l'est aussi. **Déplacer le téléphone déplace donc
+> le pinceau à travers la pièce** — et le tube reste là où on l'a laissé.
 
-La profondeur, elle, est **résolue métriquement**. MediaPipe renvoie aussi `worldLandmarks` : les
-21 points en **mètres**, donc la taille réelle de la main est connue, pas supposée. Pour une caméra
-en perspective, une longueur `L` à la distance `d` couvre une fraction `P[5]·L/(2d)` de la hauteur
-d'écran, d'où `d = P[5]·L/(2f)`. Aucune constante à étalonner, et ça s'adapte tout seul à la taille
-de la main de celui qui tient le téléphone. Le bouton *Prof. fixe* fige la distance à 45 cm.
+### Le suivi de main a été retiré
+
+Une version précédente déclenchait le tracé sur un **pincement pouce-index** détecté par MediaPipe.
+C'est parti, et c'était la bonne décision : MediaPipe interprétait de la géométrie de pièce
+ordinaire comme une main assez souvent pour que **filmer une pièce se mette à dessiner tout seul**.
+Un geste qui se déclenche quand on n'a pas fait de geste est pire que pas de geste du tout.
+
+Le retrait a aussi supprimé un modèle de 7,8 Mo à télécharger, un réseau de neurones par frame, et
+le `readPixels` synchrone qui bloquait le GPU pour l'alimenter. Le démarrage est immédiat et il n'y
+a plus aucun asset à charger.
 
 ### Pourquoi pas AR.js ni WebXR
 
@@ -64,8 +68,7 @@ licence d'usage limité, chargé ici depuis jsDelivr :
 https://cdn.jsdelivr.net/npm/@8thwall/engine-binary@1/dist/xr.js
 ```
 
-Aucune authentification n'est requise à l'exécution. Le hand tracking n'est **pas** dans ce
-binaire, d'où MediaPipe.
+Aucune authentification n'est requise à l'exécution.
 
 **L'attribution est obligatoire, et n'est pas désactivable.** Section 1.3.1.2 du *XR Engine License
 Agreement* : toute production utilisant le logiciel doit conserver l'identification de Niantic
@@ -89,9 +92,8 @@ npm install
 npm run serve
 ```
 
-Le premier build télécharge le modèle de main (~7,8 Mo) dans `public/models/` et copie le runtime
-WASM de MediaPipe dans `public/mediapipe-wasm/`. Les deux sont servis depuis votre propre origine,
-donc pas de dépendance CDN à l'exécution et pas de risque de désynchronisation de versions.
+Aucun asset à télécharger : la seule dépendance externe à l'exécution est le moteur 8th Wall, servi
+depuis jsDelivr (ou depuis votre propre origine, voir `npm run vendor:engine`).
 
 ### Tester sur l'iPhone : le piège HTTPS
 
@@ -129,10 +131,8 @@ Ce que `netlify.toml` règle, et qui n'est pas évident :
   comptes.
 - `Permissions-Policy: camera=(self)`.
 - Cache immuable sur le modèle (7,8 Mo) et les WASM, qui ne changent jamais entre deux déploiements.
-- **Pas** de `Cross-Origin-Embedder-Policy`. Ce serait tentant pour donner `SharedArrayBuffer` à
-  MediaPipe, mais COEP bloque toute sous-ressource sans en-tête CORP — dont le moteur 8th Wall sur
-  jsDelivr. L'application ne chargerait plus du tout. `tasks-vision` fonctionne très bien en
-  mono-thread.
+- **Pas** de `Cross-Origin-Embedder-Policy`. COEP bloque toute sous-ressource sans en-tête CORP —
+  dont le moteur 8th Wall sur jsDelivr. L'application ne chargerait plus du tout.
 
 ### Déployer sur GitHub Pages (alternative)
 
@@ -141,7 +141,7 @@ Le workflow `.github/workflows/deploy.yml` fait la même chose. **À activer une
 
 ## Utilisation
 
-En haut à gauche, un **badge de version** (`v0.8.0`). Le toucher déplie le commit et la date de
+En haut à gauche, un **badge de version** (`v0.9.0`). Le toucher déplie le commit et la date de
 build : c'est ce qui identifie précisément le déploiement qu'on a sous les yeux.
 
 | Bouton | Effet |
@@ -152,21 +152,21 @@ build : c'est ce qui identifie précisément le déploiement qu'on a sous les ye
 | **Prof. auto / fixe** | Profondeur métrique déduite de la main, ou figée à 45 cm |
 | **Debug** | Affiche le squelette détecté et les valeurs en direct |
 
-### Deux façons de dessiner
+### Comment dessiner
 
-**Au pincement.** Pouce et index se rejoignent devant la caméra, le tube suit le bout de l'index.
+Appui long (350 ms) dans le cercle au centre de l'écran, puis **déplacer le téléphone**. Relâcher
+ferme le tube.
 
-**Au doigt sur l'écran** — le téléphone devient le pinceau. Appui long (350 ms) dans le cercle au
-centre de l'écran : le point de dessin se fixe à **30 cm droit devant l'objectif**, et c'est en
-**déplaçant le téléphone** que l'on trace. Relâcher ferme le tube. Le réticule central indique la
-zone : blanc au repos, jaune pendant l'appui, vert pendant le tracé.
+Le réticule indique l'état : anneau blanc au repos, jaune pendant l'appui, vert pendant le tracé.
+Le disque translucide au centre montre **l'épaisseur qu'aura le tube à la distance choisie** — il
+grossit quand on rapproche le pinceau, rétrécit quand on l'éloigne.
 
-Ce mode ne dépend pas du suivi de main : il fonctionne même si MediaPipe n'a pas pu charger. Un
-appui court ne laisse aucune trace, et un appui hors de la zone centrale ou sur un bouton est
-ignoré. Si un tracé au pincement est en cours, l'appui long prend la main — mélanger deux sources
-de points dans un même tube n'aurait pas de sens.
+Le **curseur vertical à droite** règle cette distance, de 15 cm à 2,50 m.
 
-`touchDrawDepth`, `touchZoneRadius` et `longPressMs` dans `config.js`.
+Un appui court ne laisse aucune trace, et un appui hors de la zone centrale, sur un bouton ou sur
+le curseur est ignoré.
+
+`touchZoneRadius`, `longPressMs`, `drawDepth` et ses bornes dans `config.js`.
 
 ### Il n'y a pas de calibrage
 
@@ -193,11 +193,10 @@ confond facilement :
 - **`slam LIMITED`, ou plusieurs mm/frame téléphone immobile** → c'est la **pose caméra** qui
   bouge. Tout tremble alors, y compris les tubes déjà terminés. Causes : surface uniforme sans
   relief, lumière faible, mouvement trop rapide. `trackingReason` précise laquelle.
-- **`slam NORMAL`, jitter proche de zéro, mais le trait en cours ondule** → c'est le **suivi de
-  main**. Seul ce qui est en train d'être dessiné est affecté ; augmenter `minCutoff` dans
-  `filterScreen` ou attendre une meilleure lumière.
+- **`slam NORMAL`, jitter proche de zéro** → le suivi tient. Un tracé qui ondule encore relève du
+  lissage : `filterWorld` et `smoothingPasses`.
 
-Un tube déjà posé est de la géométrie statique : s'il tremble, ce n'est jamais MediaPipe.
+Un tube déjà posé est de la géométrie statique : s'il tremble, c'est forcément la pose caméra.
 
 ### Échelle : stable plutôt que juste
 
@@ -241,12 +240,11 @@ et supprime toute cette classe de trou.
 
 Tout est dans [`src/config.js`](src/config.js) :
 
-- `pinchCloseRatio` / `pinchOpenRatio` — sensibilité du pincement (deux seuils = hystérésis, pour
-  éviter que le trait clignote à la limite)
-- `filterScreen` / `filterDepth` — filtre One Euro. `minCutoff` règle la stabilité d'une main
-  immobile (l'augmenter réduit la latence) ; `beta` règle la vitesse à laquelle le filtre s'efface
-  quand la main bouge (l'augmenter réduit le retard sur les gestes rapides)
-- `depthMin` / `depthMax` — bornes de sécurité sur la profondeur, pas un étalonnage
+- `longPressMs` / `touchZoneRadius` — déclenchement du tracé
+- `drawDepth`, `drawDepthMin`, `drawDepthMax` — distance initiale et bornes du curseur
+- `filterWorld` — filtre One Euro sur la position du pinceau. `minCutoff` règle la stabilité quand
+  le téléphone est immobile (l'augmenter réduit la latence) ; `beta` règle la vitesse à laquelle le
+  filtre s'efface quand le téléphone bouge (l'augmenter réduit le retard sur les gestes rapides)
 - `tubeRadius` (3,6 cm), `palette` — apparence
 - `smoothingPasses` / `smoothingLambda` — plus de passes donne un tracé plus rond, mais plus court :
   les coins sont rognés
@@ -294,18 +292,17 @@ npm run serve                                            # dans un autre termina
 npm run smoke -- http://127.0.0.1:5173/
 ```
 
-48 assertions : câblage du pipeline, chargement réel de MediaPipe, correspondance image → écran
-(dont deux tests qui verrouillent le sens des axes : main à droite → tube à droite, main en haut →
-tube en haut), profondeur métrique retrouvée à 1 % sur des mains synthétiques de tailles
-différentes, comportement du filtre One Euro, invariance d'échelle du pincement, construction et
-cycle de vie des tubes, et une non-régression sur le chargement (voir ci-dessous). Le moteur 8th
+38 assertions : câblage du pipeline, verrouillage de l'échelle SLAM, réglage de la distance par le
+curseur et sa prévisualisation, déclenchement du tracé (appui long, appui court ignoré, hors zone
+ignoré, curseur ignoré), tracé pendant un déplacement simulé du téléphone, comportement du filtre
+One Euro, lissage de la ligne centrale, construction et cycle de vie des tubes. Le moteur 8th
 Wall est stubbé (et bloqué au niveau réseau, pour que le résultat ne dépende pas de sa
 disponibilité), donc aucune caméra n'est nécessaire.
 
 ### 2. Intégration — vrai moteur, caméra factice
 
-Celui-ci lance **toute** l'application : vrai moteur 8th Wall, vrai SLAM, vrai MediaPipe. Seule la
-caméra est simulée, via le périphérique de capture factice de Chromium.
+Celui-ci lance **toute** l'application : vrai moteur 8th Wall, vrai SLAM. Seule la caméra est
+simulée, via le périphérique de capture factice de Chromium.
 
 ```bash
 npm i -D playwright @8thwall/engine-binary @8thwall/xrextras @8thwall/landing-page
@@ -317,8 +314,8 @@ npm run serve                                  # dans un autre terminal
 npm run live -- http://127.0.0.1:5173/ /tmp/fake.y4m live.png
 ```
 
-Il affiche l'état interne seconde par seconde (frames, main détectée, pincements, profondeur,
-position caméra) et produit une capture d'écran. **C'est ce test qui a trouvé le bug le plus
+Il affiche l'état interne seconde par seconde (frames, état du SLAM, distance, position caméra) et
+produit une capture d'écran. **C'est ce test qui a trouvé le bug le plus
 sérieux du projet** : `camerapixelarray` est publié sur `processGpuResult`, pas
 `processCpuResult` — le suivi de main ne recevait aucune image.
 
@@ -329,19 +326,6 @@ Deux détails qui coûtent du temps si on ne les connaît pas :
 - Le moteur doit être servi **depuis la même origine** (`npm run vendor:engine`) ; `.env.local`
   bascule les `<script>` du CDN vers `public/vendor/`. Supprimer ce fichier pour revenir au CDN.
 
-#### Tester le dessin pour de vrai
-
-Le damier ne contient pas de main, donc `framesWithHand` reste à 0. Pour exercer la chaîne
-complète pincement → tube, filmez votre propre main en train de pincer et convertissez le clip
-(le y4m n'est pas compressé, restez court) :
-
-```bash
-ffmpeg -i main.mov -t 10 -s 640x480 -pix_fmt yuv420p /tmp/main.y4m
-npm run live -- http://127.0.0.1:5173/ /tmp/main.y4m live.png
-```
-
-`framesWithHand`, `pinchEvents` et `strokes` doivent alors monter.
-
 ### Ce que rien de tout ça ne remplace
 
 Un vrai iPhone reste nécessaire pour : la **qualité du SLAM** (une vidéo synthétique n'a pas de
@@ -349,24 +333,8 @@ parallaxe, la caméra ne bouge donc pas dans la scène), la **fluidité réelle*
 headless met plus d'une seconde par inférence, totalement non représentatif) et l'**ergonomie du
 geste**.
 
-### Le piège du modèle manquant
-
-Passer à MediaPipe une URL qu'il ne peut pas charger **ne rejette pas** : il journalise
-`Unable to open zip archive` en interne et la promesse ne se résout jamais. L'application restait
-alors bloquée pour toujours sur son message de chargement — indiscernable, vu de l'extérieur, d'un
-téléchargement lent. Un hébergeur qui répond à un fichier absent par sa page HTML 404 reproduit le
-cas exactement.
-
-Le modèle est donc récupéré par l'application elle-même (`modelAssetBuffer`) et non par une URL
-confiée à MediaPipe. Bénéfices : le HTTP 404 et la page HTML sont détectés explicitement, la
-progression du téléchargement est affichée, et tout appel à la bibliothèque est borné par un
-délai. En cas d'échec, l'erreur exacte s'affiche **à l'écran** — un téléphone n'a pas de console.
-Un test verrouille ce comportement.
-
 ## Limites connues
 
-- **Le suivi de main n'a jamais vu une vraie main ici.** Les mires synthétiques valident la
-  géométrie et le pipeline, pas la détection elle-même.
 - **Pas de persistance.** Les dessins vivent en mémoire et disparaissent au rechargement. Les
   ancrer sur un lieu et les retrouver plus tard demanderait un VPS — Niantic Lightship n'est
   justement **pas** inclus dans le binaire libre.

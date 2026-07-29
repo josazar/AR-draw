@@ -1,9 +1,6 @@
 node_modules
 dist
 .DS_Store
-# Fetched/copied by scripts/copy-mediapipe-wasm.js on every build.
-public/mediapipe-wasm
-public/models
 # Written by scripts/vendor-engine.mjs for offline / headless testing.
 public/vendor
 .env.local

@@ -10,8 +10,7 @@
 //   node test/make-fake-camera.mjs /tmp/fake.y4m
 //   npm run serve                  # another shell
 //   npm run live -- http://127.0.0.1:5173/ /tmp/fake.y4m live.png
-//
-// Point it at a clip of a real hand pinching to exercise the drawing path for real.
+
 import {chromium, devices} from 'playwright'
 
 const [, , URL_UNDER_TEST, VIDEO, SHOT = 'live.png'] = process.argv
@@ -70,13 +69,12 @@ const final = await page.evaluate(() => window.__ardraw.state)
 await page.screenshot({path: SHOT})
 
 const checks = [
-  ['camera frames reach the pipeline', final.frames > 0, `${final.frames} frames`],
+  ['the render loop is running', final.frames > 0, `${final.frames} frames`],
   [
-    'hand detected',
-    final.framesWithHand > 0,
-    final.framesWithHand > 0
-      ? `${final.framesWithHand}/${final.frames} frames`
-      : 'none -- expected with a synthetic clip; use real hand footage to exercise drawing',
+    'SLAM reports a tracking state',
+    Boolean(final.trackingStatus),
+    `${final.trackingStatus} / ${final.trackingReason} -- LIMITED/INITIALIZING is correct here, a` +
+      ' flat synthetic clip gives SLAM no parallax to converge on',
   ],
   ['no page errors', !consoleLines.some((l) => l.startsWith('[pageerror]')), ''],
 ]

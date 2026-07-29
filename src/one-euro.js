@@ -1,8 +1,8 @@
 // One Euro filter.
 //
-// A plain exponential average forces a bad trade: smooth enough to kill MediaPipe's jitter means
-// visibly laggy when the hand moves fast. This filter varies its cutoff with speed -- heavy
-// smoothing when the hand is nearly still (where jitter is what you see), almost none when it is
+// A plain exponential average forces a bad trade: smooth enough to kill SLAM pose jitter means
+// visibly laggy when the phone sweeps fast. This filter varies its cutoff with speed -- heavy
+// smoothing when the phone is nearly still (where jitter is what you see), almost none when it is
 // moving (where lag is what you feel). That is exactly the drawing case.
 //
 // Casiez, Roussel & Vogel, CHI 2012.

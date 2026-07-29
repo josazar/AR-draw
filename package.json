@@ -1,19 +1,17 @@
 {
   "name": "ar-draw",
   "private": true,
-  "version": "0.8.0",
+  "version": "0.9.0",
   "type": "module",
   "scripts": {
-    "copy-wasm": "node scripts/copy-mediapipe-wasm.js",
-    "serve": "npm run copy-wasm && vite",
-    "build": "npm run copy-wasm && vite build",
+    "serve": "vite",
+    "build": "vite build",
     "preview": "vite preview",
     "smoke": "node test/smoke.mjs",
     "vendor:engine": "node scripts/vendor-engine.mjs",
     "live": "node test/live.mjs"
   },
   "dependencies": {
-    "@mediapipe/tasks-vision": "^0.10.22",
     "three": "^0.183.2"
   },
   "devDependencies": {

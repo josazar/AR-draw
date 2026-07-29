@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 
-    <title>AR Draw — dessin spatial au doigt</title>
-    <meta name="description" content="Pincez le pouce et l'index pour dessiner des tubes 3D ancres dans l'espace.">
+    <title>AR Draw — dessin spatial</title>
+    <meta name="description" content="Appui long au centre de l'ecran pour dessiner des tubes 3D ancres dans l'espace.">
 
     <!--
       8th Wall engine binary. Provides the camera feed and, crucially, SLAM world tracking, which
@@ -29,9 +29,6 @@
     <!-- 8th Wall draws the camera feed and the three.js scene here. -->
     <canvas id="camerafeed"></canvas>
 
-    <!-- 2D overlay used to draw the detected hand skeleton when debug mode is on. -->
-    <canvas id="debugoverlay"></canvas>
-
     <!--
       Which build is actually on screen. Tap to expand with the commit, the build time, and the
       attribution the XR Engine License Agreement requires (section 1.3.1.2: creator, copyright
@@ -47,22 +44,30 @@
     </div>
 
     <!--
-      Marks the press zone for touch drawing, and doubles as the aiming point: the tube is drawn
-      wherever this sits, 30 cm ahead of the lens.
+      Outer ring marks the press zone; the inner dot previews how thick the tube will look at the
+      chosen distance, so the slider has visible consequences before you commit to a stroke.
     -->
-    <div id="reticle"></div>
+    <div id="reticle"><span id="reticle-dot"></span></div>
+
+    <!-- Vertical depth slider. Sets how far ahead of the lens the brush sits. -->
+    <div id="depth">
+      <div id="depth-value">30 cm</div>
+      <div id="depth-track">
+        <input id="depth-slider" type="range" min="15" max="250" step="5" value="30"
+               aria-label="Distance de dessin en centimetres">
+      </div>
+    </div>
 
     <div id="hud">
       <div id="status" class="pill">Chargement…</div>
-      <div id="hint" class="pill hint">Pincez pouce + index — ou appui long au centre</div>
+      <div id="hint" class="pill hint">Puis déplacez le téléphone pour tracer · curseur à droite : distance</div>
     </div>
 
     <div id="controls">
       <button id="btn-undo" type="button" title="Annuler le dernier tube">Annuler</button>
       <button id="btn-clear" type="button" title="Tout effacer">Effacer</button>
       <button id="btn-color" type="button" title="Changer de couleur">Couleur</button>
-      <button id="btn-depth" type="button" title="Profondeur auto ou fixe">Prof.&nbsp;auto</button>
-      <button id="btn-debug" type="button" title="Afficher le squelette detecte">Debug</button>
+      <button id="btn-debug" type="button" title="Afficher les valeurs de suivi">Debug</button>
     </div>
 
     <script type="module" src="src/app.js"></script>

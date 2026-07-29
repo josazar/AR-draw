@@ -1,14 +1,12 @@
-// Entry point. Wires the 8th Wall camera pipeline, MediaPipe hand tracking and the tube drawing
-// together.
+// Entry point. Wires the 8th Wall camera pipeline to the tube drawing.
 //
-// The idea in one line: 8th Wall's SLAM tells us where the phone is in the room, MediaPipe tells
-// us where the fingertip is on the screen, and casting a ray from one through the other gives a
-// point in world space. Because that point is expressed in the SLAM world frame, the tube stays
-// put when the phone moves.
+// The idea in one line: 8th Wall's SLAM tells us where the phone is in the room, the brush sits a
+// fixed distance straight ahead of the lens, and moving the phone drags that brush through space.
+// Because the brush position is derived from the SLAM camera pose, it lands in the world frame,
+// which is what keeps a finished tube where you drew it.
 
 import * as THREE from 'three'
-import {CONFIG, HAND_CONNECTIONS, LM} from './config'
-import {createHandTracker, estimateDepthMeters, imageToScreen, pinchRatio} from './hand-tracking'
+import {CONFIG} from './config'
 import {createOneEuroFilter} from './one-euro'
 import {createDrawing} from './tube-drawing'
 
@@ -28,12 +26,13 @@ const ui = {
   versionBuild: document.getElementById('version-build'),
   status: document.getElementById('status'),
   hint: document.getElementById('hint'),
-  overlay: document.getElementById('debugoverlay'),
   reticle: document.getElementById('reticle'),
+  reticleDot: document.getElementById('reticle-dot'),
+  depthSlider: document.getElementById('depth-slider'),
+  depthValue: document.getElementById('depth-value'),
   undo: document.getElementById('btn-undo'),
   clear: document.getElementById('btn-clear'),
   color: document.getElementById('btn-color'),
-  depth: document.getElementById('btn-depth'),
   debug: document.getElementById('btn-debug'),
 }
 
@@ -56,69 +55,36 @@ wireVersionBadge()
 const ardrawPipelineModule = () => {
   let scene
   let camera
-  let arCanvas
   let drawing
-  let tracker = null
-
-  let autoDepth = true
   let debugVisible = false
-  let modelSource = null
 
-  // Latest detection ({landmarks, worldLandmarks}), reused on frames where detection is skipped.
-  let detection = null
-  // Where the engine last drew the camera image, in canvas pixels. Needed to map a landmark to a
-  // screen position; see imageToScreen.
-  let cameraViewport = null
-  let frameCounter = 0
+  // Press and hold in the centre zone, then move the phone to draw.
+  let touchPointerId = null
+  let touchTimer = null
+  let touchDrawing = false
 
-  // Rolling average of inference time, driving the automatic detection stride.
-  let detectMsEma = 0
-  let detectStride = 1
-  let detectCount = 0
-
-  // Measurement-space smoothing: the fingertip on screen, and its distance.
-  const filterU = createOneEuroFilter(CONFIG.filterScreen)
-  const filterV = createOneEuroFilter(CONFIG.filterScreen)
-  const filterDepth = createOneEuroFilter(CONFIG.filterDepth)
-  let smoothedDepth = CONFIG.depthFixed
-  // Distance frozen at pinch time; see CONFIG.lockDepthDuringStroke.
-  let strokeDepth = null
-  const tipWorld = new THREE.Vector3()
+  let drawDepth = CONFIG.drawDepth
+  const filterWorld = {
+    x: createOneEuroFilter(CONFIG.filterWorld),
+    y: createOneEuroFilter(CONFIG.filterWorld),
+    z: createOneEuroFilter(CONFIG.filterWorld),
+  }
 
   // SLAM health, straight from the engine, and how much the camera pose moves frame to frame.
-  // Together these separate the two causes of a shaky drawing: a jittery camera pose shakes
-  // everything including finished tubes, whereas noisy hand tracking only affects what is being
-  // drawn right now. Without the distinction it is all just "it wobbles".
+  // A finished tube is static geometry, so if it shakes the pose is shaking -- these two numbers
+  // are what tell a tracking problem apart from anything else.
   let trackingStatus = null
   let trackingReason = null
   let poseJitterMm = 0
   const lastCameraPos = new THREE.Vector3()
   let hasLastCameraPos = false
 
-  const resetFilters = () => {
-    filterU.reset()
-    filterV.reset()
-    filterDepth.reset()
-  }
-
-  // Touch drawing: press and hold in the centre zone, then move the phone to draw.
-  let touchPointerId = null
-  let touchTimer = null
-  let touchDrawing = false
-
-  // Pinch debouncing.
-  let pinchHeld = false
-  let pinchCandidate = false
-  let pinchStreak = 0
-  let lastPinchRatio = Number.POSITIVE_INFINITY
-
-  const overlayCtx = ui.overlay.getContext('2d')
+  const brushWorld = new THREE.Vector3()
   const rayTarget = new THREE.Vector3()
   const cameraWorldPos = new THREE.Vector3()
+  let lastDotPx = -1
 
-  // Counters exposed on window for the headless harness; also handy from Safari's Web Inspector
-  // when debugging on a real phone.
-  const stats = {frames: 0, framesWithHand: 0, pinchEvents: 0}
+  const stats = {frames: 0}
 
   const initScene = () => {
     // MeshLambertMaterial needs light to be visible at all.
@@ -127,84 +93,43 @@ const ardrawPipelineModule = () => {
     key.position.set(2, 4, 3)
     scene.add(key)
 
-    // Must sit above y=0 for SLAM to initialise with a sensible ground plane. In absolute-scale
-    // mode the engine owns this afterwards and reports true metres; the value here only seeds the
-    // initial projection matrix.
+    // Must sit above y=0 for SLAM to initialise with a sensible ground plane.
     camera.position.set(0, 1.4, 0)
   }
 
-  // Projects a normalised screen point out to `depth` metres along the camera ray, in world space.
-  const screenToWorld = (u, v, depth) => {
+  // The brush: straight ahead of the lens, drawDepth metres out, in world coordinates.
+  const brushPosition = () => {
     camera.updateMatrixWorld()
     camera.getWorldPosition(cameraWorldPos)
-
-    rayTarget.set(u * 2 - 1, -(v * 2 - 1), 0.5).unproject(camera)
-    return rayTarget.sub(cameraWorldPos).normalize().multiplyScalar(depth).add(cameraWorldPos)
+    rayTarget.set(0, 0, 0.5).unproject(camera)
+    return rayTarget.sub(cameraWorldPos).normalize().multiplyScalar(drawDepth).add(cameraWorldPos)
   }
 
-  const resizeOverlay = () => {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2)
-    ui.overlay.width = window.innerWidth * dpr
-    ui.overlay.height = window.innerHeight * dpr
-    overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  // Smoothed brush position. The brush is rigidly attached to the camera, so its world position
+  // IS the camera pose, and SLAM's noise lands straight in the drawing. Filtering it here is
+  // filtering the noisy measurement, not fighting the tracker.
+  const smoothedBrush = (now) => {
+    const raw = brushPosition()
+    brushWorld.set(
+      filterWorld.x.filter(raw.x, now),
+      filterWorld.y.filter(raw.y, now),
+      filterWorld.z.filter(raw.z, now)
+    )
+    return brushWorld
   }
 
-  const drawDebugOverlay = (points) => {
-    overlayCtx.clearRect(0, 0, window.innerWidth, window.innerHeight)
-    if (!points) return
-
-    const toPx = ({u, v}) => [u * window.innerWidth, v * window.innerHeight]
-
-    overlayCtx.strokeStyle = pinchHeld ? '#34c759' : 'rgba(255,255,255,0.85)'
-    overlayCtx.lineWidth = 2
-    overlayCtx.beginPath()
-    for (const [a, b] of HAND_CONNECTIONS) {
-      overlayCtx.moveTo(...toPx(points[a]))
-      overlayCtx.lineTo(...toPx(points[b]))
-    }
-    overlayCtx.stroke()
-
-    overlayCtx.fillStyle = pinchHeld ? '#34c759' : '#0a84ff'
-    for (const point of points) {
-      const [x, y] = toPx(point)
-      overlayCtx.beginPath()
-      overlayCtx.arc(x, y, 3, 0, Math.PI * 2)
-      overlayCtx.fill()
-    }
-
-    // Ring on the fingertip that is actually drawing, so it is obvious which point is tracked.
-    const [tx, ty] = toPx(points[LM.INDEX_TIP])
-    overlayCtx.strokeStyle = '#ffd60a'
-    overlayCtx.lineWidth = 3
-    overlayCtx.beginPath()
-    overlayCtx.arc(tx, ty, 12, 0, Math.PI * 2)
-    overlayCtx.stroke()
-  }
-
-  const wireControls = () => {
-    ui.undo.addEventListener('click', () => drawing.undo())
-    ui.clear.addEventListener('click', () => drawing.clear())
-
-    ui.color.addEventListener('click', () => {
-      const color = drawing.nextColor()
-      ui.color.style.color = `#${color.toString(16).padStart(6, '0')}`
-    })
-
-    ui.depth.addEventListener('click', () => {
-      autoDepth = !autoDepth
-      ui.depth.textContent = autoDepth ? 'Prof. auto' : 'Prof. fixe'
-      ui.depth.classList.toggle('on', !autoDepth)
-    })
-
-    ui.debug.addEventListener('click', () => {
-      debugVisible = !debugVisible
-      ui.overlay.classList.toggle('visible', debugVisible)
-      ui.debug.classList.toggle('on', debugVisible)
-      if (!debugVisible) overlayCtx.clearRect(0, 0, window.innerWidth, window.innerHeight)
-    })
-
-    window.addEventListener('resize', resizeOverlay)
-    resizeOverlay()
+  // The inner dot previews the tube's apparent thickness at the chosen distance: a length L at
+  // distance d covers L * P[5] / (2d) of the screen height. It gives the slider a visible
+  // consequence before committing to a stroke.
+  const updateReticleDot = () => {
+    if (!camera) return
+    const p5 = camera.projectionMatrix.elements[5]
+    const px = ((2 * CONFIG.tubeRadius * p5) / (2 * drawDepth)) * window.innerHeight
+    const clamped = Math.max(3, Math.min(px, 170))
+    if (Math.abs(clamped - lastDotPx) < 0.5) return
+    lastDotPx = clamped
+    ui.reticleDot.style.width = `${clamped}px`
+    ui.reticleDot.style.height = `${clamped}px`
   }
 
   const setReticle = (state) => {
@@ -218,19 +143,16 @@ const ardrawPipelineModule = () => {
     return Math.hypot(dx, dy) <= radius
   }
 
-  const startTouchStroke = () => {
+  const startStroke = () => {
     touchTimer = null
-    // A hand stroke and a touch stroke at once would interleave points from two different places
-    // into one tube. The touch is the more deliberate gesture, so it wins.
-    if (pinchHeld) {
-      pinchHeld = false
-      pinchCandidate = false
-      pinchStreak = 0
-      drawing.end()
-    }
     touchDrawing = true
     setReticle('drawing')
-    drawing.begin(screenToWorld(0.5, 0.5, CONFIG.touchDrawDepth))
+    // No filter history yet; resetting makes the first sample the current position rather than a
+    // lurch from wherever the previous stroke ended.
+    filterWorld.x.reset()
+    filterWorld.y.reset()
+    filterWorld.z.reset()
+    drawing.begin(smoothedBrush(performance.now()))
   }
 
   const releaseTouch = () => {
@@ -246,19 +168,19 @@ const ardrawPipelineModule = () => {
     setReticle('')
   }
 
-  // Listening on the window rather than the canvas: the canvas is sized by the engine, and a
-  // press that missed it would silently do nothing. Pointer events rather than touch events, so
-  // the same path works with a mouse -- which is what makes this testable headlessly.
+  // Listeners on the window, not the canvas: the canvas is sized by the engine, and a press that
+  // missed it would silently do nothing. Pointer events rather than touch events, so the same
+  // path works with a mouse -- which is what makes this testable headlessly.
   const wireTouchDrawing = () => {
     window.addEventListener('pointerdown', (event) => {
       if (touchPointerId !== null) return
       // Never steal a press meant for a control.
-      if (event.target?.closest?.('#controls, #version')) return
+      if (event.target?.closest?.('#controls, #version, #depth')) return
       if (!inCentreZone(event.clientX, event.clientY)) return
 
       touchPointerId = event.pointerId
       setReticle('armed')
-      touchTimer = setTimeout(startTouchStroke, CONFIG.longPressMs)
+      touchTimer = setTimeout(startStroke, CONFIG.longPressMs)
     })
 
     const onEnd = (event) => {
@@ -269,48 +191,48 @@ const ardrawPipelineModule = () => {
     window.addEventListener('pointercancel', onEnd)
   }
 
-  // Returns true when touch drawing owns this frame, so hand tracking sits it out.
-  const updateTouchDrawing = () => {
-    if (!touchDrawing) return false
-    // Recomputed every frame: the point is fixed relative to the camera, so the phone's motion
-    // through the room is what lays down the tube.
-    drawing.extend(screenToWorld(0.5, 0.5, CONFIG.touchDrawDepth))
-    setStatus(`Dessin au doigt · ${(CONFIG.touchDrawDepth * 100).toFixed(0)} cm`, 'drawing')
-    return true
+  const wireDepthSlider = () => {
+    const apply = () => {
+      drawDepth = Number(ui.depthSlider.value) / 100
+      ui.depthValue.textContent = drawDepth >= 1
+        ? `${drawDepth.toFixed(2).replace('.', ',')} m`
+        : `${Math.round(drawDepth * 100)} cm`
+      updateReticleDot()
+    }
+    ui.depthSlider.min = String(Math.round(CONFIG.drawDepthMin * 100))
+    ui.depthSlider.max = String(Math.round(CONFIG.drawDepthMax * 100))
+    ui.depthSlider.value = String(Math.round(CONFIG.drawDepth * 100))
+    ui.depthSlider.addEventListener('input', apply)
+    apply()
   }
 
-  const toScreenPoints = (raw) =>
-    raw.map(({x, y}) => imageToScreen(x, y, cameraViewport, arCanvas.width, arCanvas.height))
+  const wireControls = () => {
+    ui.undo.addEventListener('click', () => drawing.undo())
+    ui.clear.addEventListener('click', () => drawing.clear())
 
-  const updatePinchState = (ratio) => {
-    const wantsPinch = pinchHeld
-      ? ratio < CONFIG.pinchOpenRatio    // stay pinched until clearly open
-      : ratio < CONFIG.pinchCloseRatio   // require a clear pinch to start
+    ui.color.addEventListener('click', () => {
+      const color = drawing.nextColor()
+      ui.color.style.color = `#${color.toString(16).padStart(6, '0')}`
+    })
 
-    if (wantsPinch === pinchCandidate) {
-      pinchStreak += 1
-    } else {
-      pinchCandidate = wantsPinch
-      pinchStreak = 1
-    }
+    ui.debug.addEventListener('click', () => {
+      debugVisible = !debugVisible
+      ui.debug.classList.toggle('on', debugVisible)
+    })
 
-    if (pinchStreak >= CONFIG.pinchDebounceFrames && pinchCandidate !== pinchHeld) {
-      pinchHeld = pinchCandidate
-      return true  // state changed
-    }
-    return false
+    window.addEventListener('resize', updateReticleDot)
   }
 
   return {
     name: 'ardraw',
 
     onStart: ({canvas}) => {
-      arCanvas = canvas
       ;({scene, camera} = XR8.Threejs.xrScene())
 
       initScene()
       drawing = createDrawing(scene)
       wireControls()
+      wireDepthSlider()
       wireTouchDrawing()
 
       canvas.addEventListener('touchmove', (event) => event.preventDefault(), {passive: false})
@@ -325,58 +247,23 @@ const ardrawPipelineModule = () => {
         get state() {
           return {
             ...stats,
-            pinchHeld,
-            autoDepth,
-            detectStride,
-            detectMs: Number(detectMsEma.toFixed(1)),
-            depth: smoothedDepth,
-            pinchRatio: lastPinchRatio,
-            strokes: drawing.strokeCount,
             touchDrawing,
+            drawDepth,
+            strokes: drawing.strokeCount,
             trackingStatus,
             trackingReason,
             poseJitterMm: Number(poseJitterMm.toFixed(2)),
-            modelSource,
-            viewport: cameraViewport,
             cameraPosition: camera.position.toArray().map((n) => Number(n.toFixed(4))),
           }
         },
       }
 
-      setStatus('Chargement du suivi de main…')
-
-      // Report progress: the model is ~7.8 MB, so on mobile data this stage is long enough that
-      // silence is indistinguishable from a hang.
-      const onProgress = ({stage, received, total}) => {
-        if (stage === 'wasm') setStatus('Chargement du moteur de vision…')
-        else if (stage === 'init') setStatus('Initialisation du suivi…')
-        else if (stage === 'model') {
-          const mb = (received / 1e6).toFixed(1)
-          setStatus(total
-            ? `Téléchargement du modèle ${mb}/${(total / 1e6).toFixed(1)} Mo`
-            : `Téléchargement du modèle ${mb} Mo`)
-        }
-      }
-
-      createHandTracker(onProgress)
-        .then((created) => {
-          tracker = created
-          modelSource = created.modelUsed
-          setStatus('Montrez votre main')
-          console.log(`[ardraw] MediaPipe delegate=${created.delegateUsed} model=${created.modelUsed}`)
-        })
-        .catch((error) => {
-          console.error('[ardraw] hand tracker failed to load', error)
-          setStatus('Suivi de main indisponible', 'error')
-          // On screen, not just in the console: a phone has no console.
-          ui.hint.textContent = String(error?.message || error)
-        })
+      setStatus('Appui long au centre pour dessiner')
     },
 
-    // The pixel array is published on processGpuResult, not processCpuResult -- the module reads
-    // it back off the GPU during the GPU phase. The camera viewport arrives the same way.
-    onUpdate: ({processCpuResult, processGpuResult}) => {
-      // Track pose health every frame, even before the hand tracker is ready.
+    onUpdate: ({processCpuResult}) => {
+      stats.frames += 1
+
       const reality = processCpuResult?.reality
       if (reality) {
         trackingStatus = reality.trackingStatus ?? trackingStatus
@@ -386,141 +273,29 @@ const ardrawPipelineModule = () => {
       camera.updateMatrixWorld()
       camera.getWorldPosition(cameraWorldPos)
       if (hasLastCameraPos) {
-        const deltaMm = cameraWorldPos.distanceTo(lastCameraPos) * 1000
-        poseJitterMm = poseJitterMm * 0.9 + deltaMm * 0.1
+        poseJitterMm = poseJitterMm * 0.9 + cameraWorldPos.distanceTo(lastCameraPos) * 1000 * 0.1
       }
       lastCameraPos.copy(cameraWorldPos)
       hasLastCameraPos = true
 
-      if (updateTouchDrawing()) return
+      updateReticleDot()
 
-      if (!tracker) return
-
-      // Where the engine drew the camera this frame. Empty on the first frame or two.
-      const viewport = processGpuResult?.gltexturerenderer?.viewport
-      if (viewport?.width) cameraViewport = viewport
-
-      const frame = processGpuResult?.camerapixelarray
-      if (frame?.pixels) {
-        frameCounter += 1
-        stats.frames += 1
-
-        // Adapt how often inference runs to what the device can actually sustain, unless the
-        // stride has been pinned in config.
-        if (CONFIG.detectEveryNFrames > 0) {
-          detectStride = CONFIG.detectEveryNFrames
-        } else if (detectMsEma > CONFIG.detectBudgetHighMs) {
-          detectStride = 3
-        } else if (detectMsEma > CONFIG.detectBudgetMs) {
-          detectStride = 2
-        } else {
-          detectStride = 1
-        }
-
-        if (frameCounter % detectStride === 0) {
-          const started = performance.now()
-          try {
-            detection = tracker.detect(frame, started)
-          } catch (error) {
-            console.warn('[ardraw] detection failed', error)
-          }
-          // The first inference pays for graph warm-up and is several orders of magnitude slower
-          // than steady state; letting it seed the average would pin the stride at its slowest
-          // for the next few seconds.
-          const elapsed = performance.now() - started
-          detectCount += 1
-          if (detectCount === 2) detectMsEma = elapsed
-          else if (detectCount > 2) detectMsEma = detectMsEma * 0.9 + elapsed * 0.1
-        }
-      }
-
-      if (!detection) {
-        // Losing the hand mid-stroke should close the tube, not leave it dangling.
-        if (pinchHeld) {
-          pinchHeld = false
-          pinchCandidate = false
-          pinchStreak = 0
-          drawing.end()
-          strokeDepth = null
-          setStatus('Main perdue — tube fermé')
-        } else {
-          setStatus('Aucune main détectée')
-        }
-        // Do not carry smoothing across a gap: the hand may reappear somewhere else entirely.
-        resetFilters()
-        if (debugVisible) drawDebugOverlay(null)
-        return
-      }
-
-      stats.framesWithHand += 1
-
-      const {landmarks, worldLandmarks} = detection
-      const {cols, rows} = frame
-      lastPinchRatio = pinchRatio(landmarks, cols, rows)
-      const changed = updatePinchState(lastPinchRatio)
-      if (changed && pinchHeld) stats.pinchEvents += 1
-
-      const screenPoints = toScreenPoints(landmarks)
-      const now = performance.now()
-
-      // Metric depth from the hand's real size and the camera projection. No constant to tune,
-      // and it adapts to whoever is holding the phone.
-      if (autoDepth && worldLandmarks) {
-        const measured = estimateDepthMeters(
-          screenPoints,
-          worldLandmarks,
-          arCanvas.width / arCanvas.height,
-          camera.projectionMatrix.elements[5]
-        )
-        if (measured !== null) {
-          smoothedDepth = THREE.MathUtils.clamp(
-            filterDepth.filter(measured * CONFIG.depthScale, now), CONFIG.depthMin, CONFIG.depthMax
-          )
-        }
-      } else {
-        smoothedDepth = CONFIG.depthFixed
-      }
-
-      // Freeze the distance for the whole stroke. pinchHeld is already up to date for this frame,
-      // so the very first frame of a pinch is what sets it.
-      if (!pinchHeld) {
-        strokeDepth = null
-      } else if (CONFIG.lockDepthDuringStroke && strokeDepth === null) {
-        strokeDepth = smoothedDepth
-      }
-      const placementDepth = strokeDepth ?? smoothedDepth
-
-      // Smooth in measurement space, then project. Doing it the other way round would smear the
-      // drawing whenever the phone moves, since the camera pose is exact and needs no filtering.
-      const tip = screenPoints[LM.INDEX_TIP]
-      const world = screenToWorld(
-        filterU.filter(tip.u, now), filterV.filter(tip.v, now), placementDepth
-      )
-      tipWorld.copy(world)
-
-      if (changed) {
-        if (pinchHeld) {
-          drawing.begin(tipWorld)
-        } else {
-          drawing.end()
-        }
-      } else if (pinchHeld) {
-        drawing.extend(tipWorld)
+      if (touchDrawing) {
+        // Recomputed every frame: the brush is fixed relative to the camera, so the phone's
+        // motion through the room is what lays down the tube.
+        drawing.extend(smoothedBrush(performance.now()))
       }
 
       if (debugVisible) {
-        drawDebugOverlay(screenPoints)
         setStatus(
-          `prof ${placementDepth.toFixed(2)}m${strokeDepth === null ? '' : ' fige'} · ` +
-          `slam ${trackingStatus || '?'} ${poseJitterMm.toFixed(1)}mm/f ` +
-          `${(window.__ardrawScale || '?').slice(0, 4)} · ` +
-          `pinch ${lastPinchRatio.toFixed(2)} · ${detectMsEma.toFixed(0)}ms/${detectStride}`,
-          pinchHeld ? 'drawing' : ''
+          `prof ${drawDepth.toFixed(2)}m · slam ${trackingStatus || '?'} ` +
+          `${poseJitterMm.toFixed(1)}mm/f · ${drawing.strokeCount} tubes`,
+          touchDrawing ? 'drawing' : ''
         )
       } else {
         setStatus(
-          pinchHeld ? 'Dessin en cours…' : 'Main détectée — pincez pour dessiner',
-          pinchHeld ? 'drawing' : ''
+          touchDrawing ? 'Dessin en cours…' : 'Appui long au centre pour dessiner',
+          touchDrawing ? 'drawing' : ''
         )
       }
     },
@@ -532,13 +307,6 @@ const onxrloaded = () => {
     XR8.GlTextureRenderer.pipelineModule(),  // Draws the camera feed.
     XR8.Threejs.pipelineModule(),            // Creates the three.js scene.
     XR8.XrController.pipelineModule(),       // SLAM world tracking.
-
-
-    // Hands MediaPipe a downscaled RGBA copy of each camera frame.
-    XR8.CameraPixelArray.pipelineModule({
-      luminance: false,
-      maxDimension: CONFIG.cameraMaxDimension,
-    }),
 
     LandingPage.pipelineModule(),                // Unsupported-browser fallback.
     XRExtras.FullWindowCanvas.pipelineModule(),  // Canvas fills the window.
