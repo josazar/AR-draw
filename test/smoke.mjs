@@ -321,6 +321,54 @@ const unit = await page.evaluate(async () => {
     `target ${target.toFixed(3)} vs ${last.toFixed(3)}`
   )
 
+  // --- centreline smoothing -------------------------------------------------------------------
+  const {smoothPolyline} = await import('/src/smoothing.js')
+
+  // A zigzag along x: alternating points off the axis, which is what a jittery finger produces.
+  const zigzag = () =>
+    Array.from({length: 21}, (_, i) => new THREE.Vector3(i * 0.02, i % 2 ? 0.01 : -0.01, 0))
+
+  const pathLength = (pts) => {
+    let total = 0
+    for (let i = 1; i < pts.length; i++) total += pts[i].distanceTo(pts[i - 1])
+    return total
+  }
+
+  const rawZig = zigzag()
+  const rawLength = pathLength(rawZig)
+  const smoothed = smoothPolyline(rawZig, 4, 0.5)
+
+  check(
+    'smoothing shortens a zigzag',
+    pathLength(smoothed) < rawLength * 0.8,
+    `${rawLength.toFixed(3)} -> ${pathLength(smoothed).toFixed(3)}`
+  )
+  check(
+    'smoothing pins both endpoints',
+    smoothed[0].distanceTo(rawZig[0]) < 1e-9 &&
+      smoothed[smoothed.length - 1].distanceTo(rawZig[rawZig.length - 1]) < 1e-9
+  )
+  check('smoothing preserves the point count', smoothed.length === rawZig.length)
+
+  // The failure that would slowly flatten a stroke while it is being drawn: smoothing the input
+  // in place, so every rebuild re-smooths an already-smoothed path.
+  check(
+    'smoothing does not modify its input',
+    Math.abs(rawZig[1].y - 0.01) < 1e-12 && Math.abs(rawZig[2].y + 0.01) < 1e-12,
+    `y1=${rawZig[1].y}`
+  )
+
+  // Repeated calls from the same raw points must be identical -- the scratch buffers are reused,
+  // so a leak between calls would show up here.
+  const again = smoothPolyline(rawZig, 4, 0.5)
+  check(
+    'smoothing is deterministic across calls',
+    again.every((p, i) => p.distanceTo(smoothed[i]) < 1e-12)
+  )
+
+  const twoPoints = [new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 0, 0)]
+  check('smoothing a 2-point line is a no-op', smoothPolyline(twoPoints, 4, 0.5).length === 2)
+
   // Tube builder.
   const scene = new THREE.Scene()
   const drawing = createDrawing(scene)
@@ -334,6 +382,14 @@ const unit = await page.evaluate(async () => {
   const meshes = []
   scene.traverse((o) => o.isMesh && meshes.push(o))
   check('a TubeGeometry is produced', meshes.some((m) => m.geometry.type === 'TubeGeometry'))
+
+  // FrontSide is what lets you see straight through a tube you are standing inside, or through a
+  // section where the sweep inverted on a tight corner.
+  check(
+    'the tube is double-sided',
+    meshes.every((m) => m.material.side === THREE.DoubleSide),
+    `side=${meshes[0]?.material.side}`
+  )
 
   drawing.end()
   check('end() finalises exactly one stroke', !drawing.isDrawing && drawing.strokeCount === 1, `count=${drawing.strokeCount}`)

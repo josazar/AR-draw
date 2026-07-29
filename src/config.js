@@ -89,10 +89,19 @@ export const CONFIG = {
 
   // 3.6 cm radius, a ~7 cm thick tube.
   tubeRadius: 0.036,
-  // 6 sides is indistinguishable from 8 at this radius on a phone screen, and costs 25% less.
-  tubeRadialSegments: 6,
-  // Tube length subdivisions per recorded point.
-  tubeSegmentsPerPoint: 2,
+  // At 3.6 cm a hexagonal cross-section is visibly faceted against a real scene; 12 reads round.
+  tubeRadialSegments: 12,
+  // Tube length subdivisions per recorded point. More segments let the curve actually bend
+  // instead of being chorded across.
+  tubeSegmentsPerPoint: 4,
+  // Ceiling on total length subdivisions, so a long stroke cannot run away.
+  tubeMaxSegments: 1500,
+
+  // Laplacian smoothing of the centreline before the tube is swept along it. Each pass moves every
+  // interior point a fraction `lambda` towards the midpoint of its neighbours. More passes means a
+  // rounder path but also a shorter one, as corners get cut.
+  smoothingPasses: 4,
+  smoothingLambda: 0.5,
 
   // The whole tube mesh is rebuilt whenever a point is added, which is the single most expensive
   // thing the app does while drawing. Throttling to ~16 rebuilds a second is imperceptible, and

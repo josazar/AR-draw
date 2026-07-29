@@ -5,13 +5,16 @@
 
 import * as THREE from 'three'
 import {CONFIG} from './config'
+import {smoothPolyline} from './smoothing'
 
 export const createDrawing = (scene) => {
   const strokes = []
   let current = null
   let colorIndex = 0
 
-  const capGeometry = new THREE.SphereGeometry(CONFIG.tubeRadius, CONFIG.tubeRadialSegments, 6)
+  const capGeometry = new THREE.SphereGeometry(
+    CONFIG.tubeRadius, CONFIG.tubeRadialSegments, Math.round(CONFIG.tubeRadialSegments / 2)
+  )
 
   // Timestamp of the last geometry rebuild, for throttling.
   let lastRebuild = 0
@@ -20,12 +23,17 @@ export const createDrawing = (scene) => {
     const {points} = stroke
     if (points.length < 2) return
 
+    // Smooth the centreline before sweeping. A kinked path does not just look kinked: the tube's
+    // frames rotate sharply through a corner, which twists the surface and can pinch it inside
+    // out. Always from the raw points, never in place -- see smoothing.js.
+    const spine = smoothPolyline(points, CONFIG.smoothingPasses, CONFIG.smoothingLambda)
+
     // Centripetal parameterisation avoids the overshooting loops that uniform Catmull-Rom
     // produces when points bunch up, which happens whenever the hand slows down.
-    const curve = new THREE.CatmullRomCurve3(points, false, 'centripetal', 0.5)
+    const curve = new THREE.CatmullRomCurve3(spine, false, 'centripetal', 0.5)
     const segments = Math.min(
-      1200,
-      Math.max(8, points.length * CONFIG.tubeSegmentsPerPoint)
+      CONFIG.tubeMaxSegments,
+      Math.max(8, spine.length * CONFIG.tubeSegmentsPerPoint)
     )
     const geometry = new THREE.TubeGeometry(
       curve, segments, CONFIG.tubeRadius, CONFIG.tubeRadialSegments, false
@@ -39,8 +47,9 @@ export const createDrawing = (scene) => {
       stroke.group.add(stroke.tube)
     }
 
-    stroke.startCap.position.copy(points[0])
-    stroke.endCap.position.copy(points[points.length - 1])
+    // Caps sit on the smoothed spine, not the raw points, or they detach from the tube ends.
+    stroke.startCap.position.copy(spine[0])
+    stroke.endCap.position.copy(spine[spine.length - 1])
   }
 
   return {
@@ -62,7 +71,15 @@ export const createDrawing = (scene) => {
     begin(position) {
       // Lambert rather than Standard: PBR shading is wasted on a plain coloured tube and costs
       // real fill rate on a phone that is already running SLAM and a neural net.
-      const material = new THREE.MeshLambertMaterial({color: CONFIG.palette[colorIndex]})
+      //
+      // DoubleSide matters here. A swept tube can locally invert where the curve turns hard, and
+      // the camera routinely ends up inside a 7 cm tube drawn 30 cm away -- both show as looking
+      // straight through the surface with the default FrontSide. Drawing back faces costs nothing
+      // on geometry this small and removes the whole class of hole.
+      const material = new THREE.MeshLambertMaterial({
+        color: CONFIG.palette[colorIndex],
+        side: THREE.DoubleSide,
+      })
       const group = new THREE.Group()
       const startCap = new THREE.Mesh(capGeometry, material)
       const endCap = new THREE.Mesh(capGeometry, material)

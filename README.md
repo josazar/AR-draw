@@ -141,7 +141,7 @@ Le workflow `.github/workflows/deploy.yml` fait la même chose. **À activer une
 
 ## Utilisation
 
-En haut à gauche, un **badge de version** (`v0.7.0`). Le toucher déplie le commit et la date de
+En haut à gauche, un **badge de version** (`v0.8.0`). Le toucher déplie le commit et la date de
 build : c'est ce qui identifie précisément le déploiement qu'on a sous les yeux.
 
 | Bouton | Effet |
@@ -216,6 +216,27 @@ moteur refusant tout changement d'échelle ensuite.
 
 `depthScale` dans `config.js` corrige un écart systématique de taille sans toucher au mode.
 
+### Lissage du tube
+
+Les points enregistrés sont le trajet du doigt, et même filtrés ils gardent de petits coudes. Un
+tube balayé le long d'une ligne coudée n'est pas seulement anguleux : les repères de `TubeGeometry`
+pivotent brutalement dans le coude, ce qui **vrille la surface** et peut la retourner — d'où
+l'impression de voir au travers.
+
+La ligne centrale passe donc par un **lissage laplacien** avant le balayage
+([`src/smoothing.js`](src/smoothing.js)) : à chaque passe, chaque point intérieur se déplace d'une
+fraction `lambda` vers le milieu de ses voisins. Les extrémités sont épinglées, donc un tracé
+commence et finit exactement là où le doigt était.
+
+Le lissage part **toujours** des points bruts, jamais sur place : lisser en place relisserait à
+chaque reconstruction un trajet déjà lissé, et le tracé s'aplatirait progressivement pendant qu'on
+dessine. Un test verrouille ce point.
+
+Le matériau est en `DoubleSide`. Une face avant seule laisse voir à travers dès que la caméra se
+retrouve **dans** le tube — ce qui arrive vite avec un tube de 7 cm dessiné à 30 cm — ou là où le
+balayage s'est localement inversé. Dessiner les faces arrière ne coûte rien sur si peu de géométrie
+et supprime toute cette classe de trou.
+
 ## Réglages
 
 Tout est dans [`src/config.js`](src/config.js) :
@@ -227,6 +248,9 @@ Tout est dans [`src/config.js`](src/config.js) :
   quand la main bouge (l'augmenter réduit le retard sur les gestes rapides)
 - `depthMin` / `depthMax` — bornes de sécurité sur la profondeur, pas un étalonnage
 - `tubeRadius` (3,6 cm), `palette` — apparence
+- `smoothingPasses` / `smoothingLambda` — plus de passes donne un tracé plus rond, mais plus court :
+  les coins sont rognés
+- `tubeRadialSegments` (12) / `tubeSegmentsPerPoint` (4) — finesse de la géométrie
 
 ### Performance
 
@@ -270,7 +294,7 @@ npm run serve                                            # dans un autre termina
 npm run smoke -- http://127.0.0.1:5173/
 ```
 
-41 assertions : câblage du pipeline, chargement réel de MediaPipe, correspondance image → écran
+48 assertions : câblage du pipeline, chargement réel de MediaPipe, correspondance image → écran
 (dont deux tests qui verrouillent le sens des axes : main à droite → tube à droite, main en haut →
 tube en haut), profondeur métrique retrouvée à 1 % sur des mains synthétiques de tailles
 différentes, comportement du filtre One Euro, invariance d'échelle du pincement, construction et
