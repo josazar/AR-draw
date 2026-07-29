@@ -43,6 +43,9 @@ const stubEngine = () => {
     XrController: {
       pipelineModule: () => ({name: 'xrcontroller'}),
       updateCameraProjectionMatrix: () => {},
+      configure: (opts) => {
+        window.__xrControllerConfig = opts
+      },
     },
     CameraPixelArray: {pipelineModule: () => ({name: 'camerapixelarray'})},
   }
@@ -79,6 +82,15 @@ await page.goto(URL_UNDER_TEST, {waitUntil: 'load'})
 // --- pipeline wiring --------------------------------------------------------------------------
 const registered = await page.evaluate(() => (window.__mods || []).map((m) => m.name))
 record(`${registered.includes('ardraw') ? 'PASS' : 'FAIL'} pipeline registers ardraw :: ${registered.join(',')}`)
+
+// Metric depth is meaningless unless SLAM reports real metres. 'responsive' scales the world from
+// an assumed camera height instead, which puts content at the wrong distance and makes it slide
+// against the room as the phone moves.
+const xrConfig = await page.evaluate(() => window.__xrControllerConfig)
+record(
+  `${xrConfig?.scale === 'absolute' ? 'PASS' : 'FAIL'} SLAM is configured for absolute scale` +
+    ` :: ${JSON.stringify(xrConfig)}`
+)
 
 const startResult = await page.evaluate(() => {
   const mod = (window.__mods || []).find((m) => m.name === 'ardraw')

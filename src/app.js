@@ -80,7 +80,19 @@ const ardrawPipelineModule = () => {
   const filterV = createOneEuroFilter(CONFIG.filterScreen)
   const filterDepth = createOneEuroFilter(CONFIG.filterDepth)
   let smoothedDepth = CONFIG.depthFixed
+  // Distance frozen at pinch time; see CONFIG.lockDepthDuringStroke.
+  let strokeDepth = null
   const tipWorld = new THREE.Vector3()
+
+  // SLAM health, straight from the engine, and how much the camera pose moves frame to frame.
+  // Together these separate the two causes of a shaky drawing: a jittery camera pose shakes
+  // everything including finished tubes, whereas noisy hand tracking only affects what is being
+  // drawn right now. Without the distinction it is all just "it wobbles".
+  let trackingStatus = null
+  let trackingReason = null
+  let poseJitterMm = 0
+  const lastCameraPos = new THREE.Vector3()
+  let hasLastCameraPos = false
 
   const resetFilters = () => {
     filterU.reset()
@@ -109,7 +121,9 @@ const ardrawPipelineModule = () => {
     key.position.set(2, 4, 3)
     scene.add(key)
 
-    // Must sit above y=0 for SLAM to initialise with a sensible ground plane.
+    // Must sit above y=0 for SLAM to initialise with a sensible ground plane. In absolute-scale
+    // mode the engine owns this afterwards and reports true metres; the value here only seeds the
+    // initial projection matrix.
     camera.position.set(0, 1.4, 0)
   }
 
@@ -239,6 +253,9 @@ const ardrawPipelineModule = () => {
             depth: smoothedDepth,
             pinchRatio: lastPinchRatio,
             strokes: drawing.strokeCount,
+            trackingStatus,
+            trackingReason,
+            poseJitterMm: Number(poseJitterMm.toFixed(2)),
             modelSource,
             viewport: cameraViewport,
             cameraPosition: camera.position.toArray().map((n) => Number(n.toFixed(4))),
@@ -278,7 +295,23 @@ const ardrawPipelineModule = () => {
 
     // The pixel array is published on processGpuResult, not processCpuResult -- the module reads
     // it back off the GPU during the GPU phase. The camera viewport arrives the same way.
-    onUpdate: ({processGpuResult}) => {
+    onUpdate: ({processCpuResult, processGpuResult}) => {
+      // Track pose health every frame, even before the hand tracker is ready.
+      const reality = processCpuResult?.reality
+      if (reality) {
+        trackingStatus = reality.trackingStatus ?? trackingStatus
+        trackingReason = reality.trackingReason ?? trackingReason
+      }
+
+      camera.updateMatrixWorld()
+      camera.getWorldPosition(cameraWorldPos)
+      if (hasLastCameraPos) {
+        const deltaMm = cameraWorldPos.distanceTo(lastCameraPos) * 1000
+        poseJitterMm = poseJitterMm * 0.9 + deltaMm * 0.1
+      }
+      lastCameraPos.copy(cameraWorldPos)
+      hasLastCameraPos = true
+
       if (!tracker) return
 
       // Where the engine drew the camera this frame. Empty on the first frame or two.
@@ -326,6 +359,7 @@ const ardrawPipelineModule = () => {
           pinchCandidate = false
           pinchStreak = 0
           drawing.end()
+          strokeDepth = null
           setStatus('Main perdue — tube fermé')
         } else {
           setStatus('Aucune main détectée')
@@ -365,11 +399,20 @@ const ardrawPipelineModule = () => {
         smoothedDepth = CONFIG.depthFixed
       }
 
+      // Freeze the distance for the whole stroke. pinchHeld is already up to date for this frame,
+      // so the very first frame of a pinch is what sets it.
+      if (!pinchHeld) {
+        strokeDepth = null
+      } else if (CONFIG.lockDepthDuringStroke && strokeDepth === null) {
+        strokeDepth = smoothedDepth
+      }
+      const placementDepth = strokeDepth ?? smoothedDepth
+
       // Smooth in measurement space, then project. Doing it the other way round would smear the
       // drawing whenever the phone moves, since the camera pose is exact and needs no filtering.
       const tip = screenPoints[LM.INDEX_TIP]
       const world = screenToWorld(
-        filterU.filter(tip.u, now), filterV.filter(tip.v, now), smoothedDepth
+        filterU.filter(tip.u, now), filterV.filter(tip.v, now), placementDepth
       )
       tipWorld.copy(world)
 
@@ -386,8 +429,9 @@ const ardrawPipelineModule = () => {
       if (debugVisible) {
         drawDebugOverlay(screenPoints)
         setStatus(
-          `pinch ${lastPinchRatio.toFixed(2)} · prof ${smoothedDepth.toFixed(2)}m · ` +
-          `${detectMsEma.toFixed(0)}ms /${detectStride} · ${drawing.strokeCount} tubes`,
+          `prof ${placementDepth.toFixed(2)}m${strokeDepth === null ? '' : ' fige'} · ` +
+          `slam ${trackingStatus || '?'} ${poseJitterMm.toFixed(1)}mm/f · ` +
+          `pinch ${lastPinchRatio.toFixed(2)} · ${detectMsEma.toFixed(0)}ms/${detectStride}`,
           pinchHeld ? 'drawing' : ''
         )
       } else {
@@ -406,6 +450,7 @@ const onxrloaded = () => {
     XR8.Threejs.pipelineModule(),            // Creates the three.js scene.
     XR8.XrController.pipelineModule(),       // SLAM world tracking.
 
+
     // Hands MediaPipe a downscaled RGBA copy of each camera frame.
     XR8.CameraPixelArray.pipelineModule({
       luminance: false,
@@ -419,6 +464,13 @@ const onxrloaded = () => {
 
     ardrawPipelineModule(),
   ])
+
+  // 'absolute' makes SLAM report translation in real metres. The default, 'responsive', derives
+  // world scale from an ASSUMED starting camera height (1.4 m), so holding the phone at 1.0 m
+  // leaves world units 40% off. Our depth estimate is genuine metres, and a scale mismatch
+  // between the two is a parallax error: content sits at the wrong distance and appears to slide
+  // against the room as the phone moves.
+  XR8.XrController.configure({scale: 'absolute'})
 
   XR8.run({canvas: document.getElementById('camerafeed')})
 }

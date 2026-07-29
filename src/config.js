@@ -43,6 +43,13 @@ export const CONFIG = {
   // Used when auto depth is switched off.
   depthFixed: 0.45,
 
+  // Freeze the distance for the duration of a stroke, fixing it at the moment the pinch closes.
+  // The depth estimate is the least certain part of the placement, and letting it wander mid
+  // stroke bends the tube towards and away from the camera as the hand rotates -- which reads as
+  // wobble even when the hand moved cleanly. The cost is that a stroke cannot be pushed away or
+  // pulled closer while drawing; release and pinch again to draw at a new distance.
+  lockDepthDuringStroke: true,
+
   // --- Smoothing ------------------------------------------------------------------------------
   // One Euro filter, applied to the MEASUREMENT (fingertip position on screen, and depth) rather
   // than to the resulting world position. Filtering the world position would fight SLAM: holding

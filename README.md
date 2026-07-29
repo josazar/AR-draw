@@ -38,6 +38,21 @@ de la main de celui qui tient le téléphone. Le bouton *Prof. fixe* fige la dis
 - **8th Wall** fait le SLAM en vision par ordinateur, dans le navigateur. C'est la seule brique qui
   résout le problème sur iOS.
 
+### Pourquoi le LiDAR de l'iPhone n'est pas utilisable
+
+Un iPhone Pro a bien un LiDAR, et il donnerait une profondeur mesurée au lieu d'estimée. Mais
+**aucune API web ne l'expose** :
+
+- WebXR, et donc son extension *Depth Sensing* (la seule API web de profondeur), n'existe pas dans
+  Safari sur iOS. Cette extension est de toute façon une implémentation Chrome/Android.
+- Aucune autre API navigateur ne donne accès au capteur de profondeur ; `getUserMedia` ne fournit
+  que des flux RGB.
+- Le moteur 8th Wall fait du SLAM purement visuel-inertiel, sans capteur de profondeur.
+
+Seule une application **native** (ARKit, `ARConfiguration.frameSemantics.sceneDepth`) y accède. Y
+passer signifierait quitter le web, donc perdre le « ouvrir un lien, ça marche » qui justifie tout
+le reste de l'architecture.
+
 ### Sur la licence 8th Wall
 
 La plateforme hébergée 8th Wall a fermé le **28 février 2026**. Il n'y a donc plus de compte, plus
@@ -126,7 +141,7 @@ Le workflow `.github/workflows/deploy.yml` fait la même chose. **À activer une
 
 ## Utilisation
 
-En haut à gauche, un **badge de version** (`v0.4.0`). Le toucher déplie le commit et la date de
+En haut à gauche, un **badge de version** (`v0.5.0`). Le toucher déplie le commit et la date de
 build : c'est ce qui identifie précisément le déploiement qu'on a sous les yeux.
 
 | Bouton | Effet |
@@ -153,6 +168,28 @@ formule.
 Pour contrôler que le suivi fonctionne : **Debug** superpose le squelette détecté, avec un cercle
 jaune sur le bout de l'index — le point qui dessine réellement. S'il suit votre doigt, tout est
 bon.
+
+### Diagnostiquer un tremblement
+
+Le bandeau en mode Debug affiche `slam <état> <n>mm/f`. Ces deux valeurs séparent deux causes qu'on
+confond facilement :
+
+- **`slam LIMITED`, ou plusieurs mm/frame téléphone immobile** → c'est la **pose caméra** qui
+  bouge. Tout tremble alors, y compris les tubes déjà terminés. Causes : surface uniforme sans
+  relief, lumière faible, mouvement trop rapide. `trackingReason` précise laquelle.
+- **`slam NORMAL`, jitter proche de zéro, mais le trait en cours ondule** → c'est le **suivi de
+  main**. Seul ce qui est en train d'être dessiné est affecté ; augmenter `minCutoff` dans
+  `filterScreen` ou attendre une meilleure lumière.
+
+Un tube déjà posé est de la géométrie statique : s'il tremble, ce n'est jamais MediaPipe.
+
+### Échelle absolue
+
+`XrController.configure({scale: 'absolute'})` fait remonter au SLAM des translations en **mètres
+réels**. Le défaut, `'responsive'`, déduit l'échelle du monde d'une hauteur de caméra **supposée**
+(1,4 m) : téléphone tenu à 1 m, les unités sont fausses de 40 %. Comme la profondeur est estimée en
+mètres réels, ce désaccord d'échelle est une erreur de parallaxe — le contenu est placé à la
+mauvaise distance et glisse par rapport à la pièce quand on bouge.
 
 ## Réglages
 
