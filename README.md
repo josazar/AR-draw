@@ -24,8 +24,11 @@ Le principe qui fait tenir l'ensemble, dans `src/app.js` :
 > position de la caméra est exprimée dans le repère monde du SLAM, le point obtenu est **lui aussi
 > dans le repère monde**. C'est ce qui fait que le tube reste en place quand le téléphone bouge.
 
-La profondeur vient de la **taille apparente des articulations** : une main qui paraît petite est
-loin. On peut basculer en profondeur fixe avec le bouton *Prof. fixe*.
+La profondeur, elle, est **résolue métriquement**. MediaPipe renvoie aussi `worldLandmarks` : les
+21 points en **mètres**, donc la taille réelle de la main est connue, pas supposée. Pour une caméra
+en perspective, une longueur `L` à la distance `d` couvre une fraction `P[5]·L/(2d)` de la hauteur
+d'écran, d'où `d = P[5]·L/(2f)`. Aucune constante à étalonner, et ça s'adapte tout seul à la taille
+de la main de celui qui tient le téléphone. Le bouton *Prof. fixe* fige la distance à 45 cm.
 
 ### Pourquoi pas AR.js ni WebXR
 
@@ -114,7 +117,7 @@ Le workflow `.github/workflows/deploy.yml` fait la même chose. **À activer une
 | **Annuler** | Supprime le dernier tube |
 | **Effacer** | Vide la scène |
 | **Couleur** | Couleur du prochain tube |
-| **Prof. auto / fixe** | Profondeur estimée depuis la taille de la main, ou figée à 45 cm |
+| **Prof. auto / fixe** | Profondeur métrique déduite de la main, ou figée à 45 cm |
 | **Debug** | Affiche le squelette détecté et les valeurs en direct |
 
 ### Il n'y a pas de calibrage
@@ -140,10 +143,11 @@ Tout est dans [`src/config.js`](src/config.js) :
 
 - `pinchCloseRatio` / `pinchOpenRatio` — sensibilité du pincement (deux seuils = hystérésis, pour
   éviter que le trait clignote à la limite)
-- `depthCalibration` — étalonnage de la profondeur ; augmenter éloigne les tubes
-- `positionSmoothing` — lissage du doigt ; MediaPipe est bruité, sans ça le tube ressemble à du
-  fil barbelé
-- `tubeRadius`, `palette` — apparence
+- `filterScreen` / `filterDepth` — filtre One Euro. `minCutoff` règle la stabilité d'une main
+  immobile (l'augmenter réduit la latence) ; `beta` règle la vitesse à laquelle le filtre s'efface
+  quand la main bouge (l'augmenter réduit le retard sur les gestes rapides)
+- `depthMin` / `depthMax` — bornes de sécurité sur la profondeur, pas un étalonnage
+- `tubeRadius` (3,6 cm), `palette` — apparence
 
 ### Performance
 
@@ -162,6 +166,19 @@ géométrie. Les leviers, par ordre d'impact :
 - `tubeRadialSegments` (6) et `tubeSegmentsPerPoint` (2). Les tubes utilisent `MeshLambertMaterial`
   et non `MeshStandardMaterial` : le PBR ne se voit pas sur un tube uni et coûte du fill rate.
 
+### Pourquoi pas WebGPU
+
+Vérifié dans les sources plutôt que supposé :
+
+- Le binaire 8th Wall ne contient **aucune** occurrence de `webgpu` ; il crée des contextes
+  `webgl`/`webgl2` et y dessine le flux caméra. Pour composer les tubes par-dessus, three.js doit
+  rendre dans **ce** contexte. Un `WebGPURenderer` vivrait dans un contexte séparé, et composer
+  deux contextes impose une recopie par frame — plus lent, pas plus rapide.
+- `@mediapipe/tasks-vision` n'expose que le délégué `"GPU"`, qui est WebGL. Aucun chemin WebGPU.
+
+Et surtout, ça viserait à côté : le coût dominant est l'inférence du réseau de neurones, pas le
+rendu de quelques tubes. Les leviers ci-dessus s'attaquent au vrai goulot.
+
 ## Tests
 
 Deux niveaux, tous deux exécutables sans téléphone.
@@ -174,9 +191,11 @@ npm run serve                                            # dans un autre termina
 npm run smoke -- http://127.0.0.1:5173/
 ```
 
-25 assertions : câblage du pipeline, chargement réel de MediaPipe, correspondance image → écran
+32 assertions : câblage du pipeline, chargement réel de MediaPipe, correspondance image → écran
 (dont deux tests qui verrouillent le sens des axes : main à droite → tube à droite, main en haut →
-tube en haut), invariance d'échelle du pincement, construction et cycle de vie des tubes. Le moteur 8th
+tube en haut), profondeur métrique retrouvée à 1 % sur des mains synthétiques de tailles
+différentes, comportement du filtre One Euro, invariance d'échelle du pincement, construction et
+cycle de vie des tubes. Le moteur 8th
 Wall est stubbé (et bloqué au niveau réseau, pour que le résultat ne dépende pas de sa
 disponibilité), donc aucune caméra n'est nécessaire.
 

@@ -35,30 +35,35 @@ export const CONFIG = {
   pinchDebounceFrames: 2,
 
   // --- Depth ----------------------------------------------------------------------------------
-  // The fingertip is a 2D point; it has to be pushed out to some distance along the camera ray.
-  // In auto mode the apparent width of the knuckles estimates that distance: a hand that looks
-  // small is far away. depth = depthCalibration / normalisedKnuckleSpan.
-  depthCalibration: 0.052,
-  depthMin: 0.18,
-  depthMax: 1.4,
+  // Solved metrically from the hand's real size and the camera projection; see estimateDepthMeters
+  // in hand-tracking.js. There is no constant to calibrate -- these only bound the result, since a
+  // half-detected hand can produce nonsense.
+  depthMin: 0.15,
+  depthMax: 1.6,
   // Used when auto depth is switched off.
   depthFixed: 0.45,
-  // Exponential smoothing on the depth estimate. Lower = smoother but laggier.
-  depthSmoothing: 0.25,
+
+  // --- Smoothing ------------------------------------------------------------------------------
+  // One Euro filter, applied to the MEASUREMENT (fingertip position on screen, and depth) rather
+  // than to the resulting world position. Filtering the world position would fight SLAM: holding
+  // the hand still while turning the phone must leave the point where it is, and the camera pose
+  // is exact, so only the noisy hand measurement should be smoothed.
+  //
+  // minCutoff sets how still a still hand looks; raise it if drawing feels laggy. beta sets how
+  // quickly the filter gets out of the way when the hand moves; raise it if fast strokes lag.
+  filterScreen: {minCutoff: 1.0, beta: 0.8, derivativeCutoff: 1.0},
+  filterDepth: {minCutoff: 0.7, beta: 0.5, derivativeCutoff: 1.0},
 
   // --- Drawing --------------------------------------------------------------------------------
-  // Exponential smoothing on the fingertip position. MediaPipe output is noisy; without this the
-  // tube looks like barbed wire.
-  positionSmoothing: 0.45,
-
   // Minimum distance in metres between two recorded points. Stops thousands of duplicate points
   // piling up when the hand is held still.
-  minSegmentLength: 0.008,
+  minSegmentLength: 0.015,
 
   // Hard cap on points per stroke, so geometry rebuilds stay cheap.
   maxPointsPerStroke: 400,
 
-  tubeRadius: 0.012,
+  // 3.6 cm radius, a ~7 cm thick tube.
+  tubeRadius: 0.036,
   // 6 sides is indistinguishable from 8 at this radius on a phone screen, and costs 25% less.
   tubeRadialSegments: 6,
   // Tube length subdivisions per recorded point.

@@ -7,8 +7,9 @@
 // put when the phone moves.
 
 import * as THREE from 'three'
-import {CONFIG, HAND_CONNECTIONS} from './config'
-import {createHandTracker, imageToScreen, knuckleSpan, pinchRatio} from './hand-tracking'
+import {CONFIG, HAND_CONNECTIONS, LM} from './config'
+import {createHandTracker, estimateDepthMeters, imageToScreen, pinchRatio} from './hand-tracking'
+import {createOneEuroFilter} from './one-euro'
 import {createDrawing} from './tube-drawing'
 
 // XRExtras expects to find three.js on the window.
@@ -40,8 +41,8 @@ const ardrawPipelineModule = () => {
   let autoDepth = true
   let debugVisible = false
 
-  // Latest detection, reused on frames where detection is skipped.
-  let landmarks = null
+  // Latest detection ({landmarks, worldLandmarks}), reused on frames where detection is skipped.
+  let detection = null
   // Where the engine last drew the camera image, in canvas pixels. Needed to map a landmark to a
   // screen position; see imageToScreen.
   let cameraViewport = null
@@ -52,10 +53,18 @@ const ardrawPipelineModule = () => {
   let detectStride = 1
   let detectCount = 0
 
-  // Smoothed state.
+  // Measurement-space smoothing: the fingertip on screen, and its distance.
+  const filterU = createOneEuroFilter(CONFIG.filterScreen)
+  const filterV = createOneEuroFilter(CONFIG.filterScreen)
+  const filterDepth = createOneEuroFilter(CONFIG.filterDepth)
   let smoothedDepth = CONFIG.depthFixed
-  const smoothedTip = new THREE.Vector3()
-  let hasSmoothedTip = false
+  const tipWorld = new THREE.Vector3()
+
+  const resetFilters = () => {
+    filterU.reset()
+    filterV.reset()
+    filterDepth.reset()
+  }
 
   // Pinch debouncing.
   let pinchHeld = false
@@ -122,7 +131,7 @@ const ardrawPipelineModule = () => {
     }
 
     // Ring on the fingertip that is actually drawing, so it is obvious which point is tracked.
-    const [tx, ty] = toPx(points[8])
+    const [tx, ty] = toPx(points[LM.INDEX_TIP])
     overlayCtx.strokeStyle = '#ffd60a'
     overlayCtx.lineWidth = 3
     overlayCtx.beginPath()
@@ -257,7 +266,7 @@ const ardrawPipelineModule = () => {
         if (frameCounter % detectStride === 0) {
           const started = performance.now()
           try {
-            landmarks = tracker.detect(frame, started)
+            detection = tracker.detect(frame, started)
           } catch (error) {
             console.warn('[ardraw] detection failed', error)
           }
@@ -271,7 +280,7 @@ const ardrawPipelineModule = () => {
         }
       }
 
-      if (!landmarks) {
+      if (!detection) {
         // Losing the hand mid-stroke should close the tube, not leave it dangling.
         if (pinchHeld) {
           pinchHeld = false
@@ -282,48 +291,57 @@ const ardrawPipelineModule = () => {
         } else {
           setStatus('Aucune main détectée')
         }
-        hasSmoothedTip = false
+        // Do not carry smoothing across a gap: the hand may reappear somewhere else entirely.
+        resetFilters()
         if (debugVisible) drawDebugOverlay(null)
         return
       }
 
       stats.framesWithHand += 1
 
+      const {landmarks, worldLandmarks} = detection
       const {cols, rows} = frame
       lastPinchRatio = pinchRatio(landmarks, cols, rows)
       const changed = updatePinchState(lastPinchRatio)
       if (changed && pinchHeld) stats.pinchEvents += 1
 
-      // Depth from apparent hand size, so pushing the hand away pushes the tube away too.
-      if (autoDepth) {
-        const span = knuckleSpan(landmarks, cols, rows)
-        const raw = span > 1e-6
-          ? THREE.MathUtils.clamp(CONFIG.depthCalibration / span, CONFIG.depthMin, CONFIG.depthMax)
-          : CONFIG.depthFixed
-        smoothedDepth += (raw - smoothedDepth) * CONFIG.depthSmoothing
+      const screenPoints = toScreenPoints(landmarks)
+      const now = performance.now()
+
+      // Metric depth from the hand's real size and the camera projection. No constant to tune,
+      // and it adapts to whoever is holding the phone.
+      if (autoDepth && worldLandmarks) {
+        const measured = estimateDepthMeters(
+          screenPoints,
+          worldLandmarks,
+          arCanvas.width / arCanvas.height,
+          camera.projectionMatrix.elements[5]
+        )
+        if (measured !== null) {
+          smoothedDepth = THREE.MathUtils.clamp(
+            filterDepth.filter(measured, now), CONFIG.depthMin, CONFIG.depthMax
+          )
+        }
       } else {
         smoothedDepth = CONFIG.depthFixed
       }
 
-      const screenPoints = toScreenPoints(landmarks)
-      const tip = screenPoints[8]  // index fingertip
-      const world = screenToWorld(tip.u, tip.v, smoothedDepth)
-
-      if (hasSmoothedTip) {
-        smoothedTip.lerp(world, CONFIG.positionSmoothing)
-      } else {
-        smoothedTip.copy(world)
-        hasSmoothedTip = true
-      }
+      // Smooth in measurement space, then project. Doing it the other way round would smear the
+      // drawing whenever the phone moves, since the camera pose is exact and needs no filtering.
+      const tip = screenPoints[LM.INDEX_TIP]
+      const world = screenToWorld(
+        filterU.filter(tip.u, now), filterV.filter(tip.v, now), smoothedDepth
+      )
+      tipWorld.copy(world)
 
       if (changed) {
         if (pinchHeld) {
-          drawing.begin(smoothedTip)
+          drawing.begin(tipWorld)
         } else {
           drawing.end()
         }
       } else if (pinchHeld) {
-        drawing.extend(smoothedTip)
+        drawing.extend(tipWorld)
       }
 
       if (debugVisible) {

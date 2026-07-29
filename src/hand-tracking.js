@@ -51,10 +51,53 @@ export const pinchRatio = (landmarks, cols, rows) => {
   return handSize > 1e-6 ? gap / handSize : Number.POSITIVE_INFINITY
 }
 
-// Apparent knuckle width, normalised against the image's long edge. Bigger = hand is closer.
-export const knuckleSpan = (landmarks, cols, rows) => {
-  const span = pixelDistance(landmarks[LM.INDEX_MCP], landmarks[LM.PINKY_MCP], cols, rows)
-  return span / Math.max(cols, rows)
+// ------------------------------------------------------------------------------------------
+// Metric depth
+// ------------------------------------------------------------------------------------------
+// The fingertip is a 2D point and has to be pushed out along the camera ray; how far decides
+// where the tube actually lands in the room. Rather than scale a hand-tuned constant by apparent
+// hand size, solve it properly.
+//
+// MediaPipe also returns worldLandmarks: the same 21 points in METRES, so the hand's true size is
+// known rather than assumed. For a perspective camera, a length L at distance d covers a fraction
+// of the screen height  f = P[5] * L / (2d)  (P[5] = 1/tan(fovY/2)), so  d = P[5] * L / (2f).
+//
+// Using the camera's own projection matrix -- the same one the unprojection uses -- keeps the
+// estimate self-consistent, and using the real hand size makes it self-calibrating: it works for
+// a large hand and a small one with no constant to tune.
+
+// Rigid pairs, chosen because the distance between them barely changes as fingers move.
+const DEPTH_PAIRS = [
+  [LM.INDEX_MCP, LM.PINKY_MCP],
+  [LM.WRIST, LM.INDEX_MCP],
+  [LM.WRIST, LM.PINKY_MCP],
+  [LM.WRIST, LM.MIDDLE_MCP],
+]
+
+const distance3d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z)
+
+// screenPoints: landmarks already mapped to normalised screen coords.
+// widthOverHeight: canvas aspect, to express a horizontal offset in screen-height units.
+// projectionP5: camera.projectionMatrix.elements[5].
+// Returns metres, or null if the hand geometry was unusable.
+export const estimateDepthMeters = (screenPoints, worldLandmarks, widthOverHeight, projectionP5) => {
+  // A tilted hand foreshortens, which shrinks the measured fraction and would push the depth
+  // estimate too far away. Taking the largest ratio picks whichever pair is closest to
+  // fronto-parallel, i.e. the least foreshortened and most trustworthy one.
+  let bestRatio = 0
+
+  for (const [a, b] of DEPTH_PAIRS) {
+    const trueLength = distance3d(worldLandmarks[a], worldLandmarks[b])
+    if (trueLength < 1e-4) continue
+
+    const du = (screenPoints[a].u - screenPoints[b].u) * widthOverHeight
+    const dv = screenPoints[a].v - screenPoints[b].v
+    const fraction = Math.hypot(du, dv)
+
+    bestRatio = Math.max(bestRatio, fraction / trueLength)
+  }
+
+  return bestRatio > 1e-6 ? projectionP5 / (2 * bestRatio) : null
 }
 
 // ------------------------------------------------------------------------------------------
@@ -118,7 +161,8 @@ export const createHandTracker = async () => {
     modelUsed,
 
     // frame: {pixels, cols, rows} RGBA from XR8.CameraPixelArray.
-    // Returns the 21 landmarks of the first detected hand, or null.
+    // Returns {landmarks, worldLandmarks} for the first detected hand, or null. landmarks are
+    // normalised to the image; worldLandmarks are in metres, relative to the hand's centre.
     detect(frame, timestampMs) {
       const {pixels, cols, rows} = frame
       if (!cols || !rows) return null
@@ -136,7 +180,12 @@ export const createHandTracker = async () => {
       lastTimestamp = timestamp
 
       const result = landmarker.detectForVideo(canvas, timestamp)
-      return result?.landmarks?.length ? result.landmarks[0] : null
+      if (!result?.landmarks?.length) return null
+
+      return {
+        landmarks: result.landmarks[0],
+        worldLandmarks: result.worldLandmarks?.[0] || null,
+      }
     },
   }
 }

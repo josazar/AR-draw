@@ -134,10 +134,12 @@ record(`${updateResult.ok ? 'PASS' : 'FAIL'} onUpdate + controls :: ${updateResu
 
 // --- pure logic ----------------------------------------------------------------------------------
 const unit = await page.evaluate(async () => {
-  const [{imageToScreen, pinchRatio, knuckleSpan}, {createDrawing}] = await Promise.all([
-    import('/src/hand-tracking.js'),
-    import('/src/tube-drawing.js'),
-  ])
+  const [{imageToScreen, pinchRatio, estimateDepthMeters}, {createDrawing}, {createOneEuroFilter}] =
+    await Promise.all([
+      import('/src/hand-tracking.js'),
+      import('/src/tube-drawing.js'),
+      import('/src/one-euro.js'),
+    ])
   const THREE = window.THREE
   const out = []
   const check = (name, cond, detail = '') =>
@@ -201,9 +203,108 @@ const unit = await page.evaluate(async () => {
   check('a closed pinch is below the close threshold', closed < 0.38, closed.toFixed(3))
   check('an open hand is above the open threshold', open > 0.55, open.toFixed(3))
 
+  // --- metric depth -------------------------------------------------------------------------
+  // Build a fronto-parallel hand of a known real size at a known distance, project it with a
+  // known camera, and check the estimator recovers that distance.
+  const P5 = 1 / Math.tan((60 * Math.PI / 180) / 2)  // 60 degree vertical fov
+  const W_OVER_H = 376 / 640
+
+  // Metres, relative to the hand centre.
+  const worldHand = (scale) => {
+    const w = Array.from({length: 21}, () => ({x: 0, y: 0, z: 0}))
+    w[0] = {x: 0, y: -0.09 * scale, z: 0}    // wrist
+    w[5] = {x: -0.04 * scale, y: 0, z: 0}    // index mcp
+    w[9] = {x: 0, y: 0, z: 0}                // middle mcp
+    w[17] = {x: 0.04 * scale, y: 0, z: 0}    // pinky mcp
+    return w
+  }
+
+  // Project that hand onto the screen at distance d. A length L covers L*P5/(2d) of the screen
+  // height; horizontal offsets are divided by the aspect to express them in width fractions.
+  const projectHand = (world, d) => {
+    const perMetre = P5 / (2 * d)
+    return world.map(({x, y}) => ({
+      u: 0.5 + (x * perMetre) / W_OVER_H,
+      v: 0.5 - y * perMetre,
+    }))
+  }
+
+  for (const d of [0.3, 0.5, 1.0]) {
+    const w = worldHand(1)
+    const got = estimateDepthMeters(projectHand(w, d), w, W_OVER_H, P5)
+    check(
+      `metric depth recovers ${d} m`,
+      Math.abs(got - d) / d < 0.01,
+      `got ${got === null ? 'null' : got.toFixed(4)}`
+    )
+  }
+
+  // Self-calibration: a big hand and a small hand at the same distance must both read that
+  // distance. This is what removed the hand-tuned constant.
+  const big = worldHand(1.4)
+  const small = worldHand(0.7)
+  const dBig = estimateDepthMeters(projectHand(big, 0.6), big, W_OVER_H, P5)
+  const dSmall = estimateDepthMeters(projectHand(small, 0.6), small, W_OVER_H, P5)
   check(
-    'knuckleSpan shrinks as the hand moves away',
-    knuckleSpan(hand(1.0, 0.02), 320, 320) > knuckleSpan(hand(0.5, 0.02), 320, 320)
+    'depth is independent of how big the hand is',
+    Math.abs(dBig - 0.6) / 0.6 < 0.01 && Math.abs(dSmall - 0.6) / 0.6 < 0.01,
+    `big ${dBig.toFixed(3)} / small ${dSmall.toFixed(3)}`
+  )
+
+  // A degenerate hand (all landmarks coincident) must not produce a bogus number.
+  check(
+    'degenerate hand geometry yields null, not nonsense',
+    estimateDepthMeters(
+      Array.from({length: 21}, () => ({u: 0.5, v: 0.5})),
+      Array.from({length: 21}, () => ({x: 0, y: 0, z: 0})),
+      W_OVER_H, P5
+    ) === null
+  )
+
+  // --- One Euro filter ------------------------------------------------------------------------
+  const settle = (f, x, n = 60, startMs = 0) => {
+    let out = 0
+    for (let i = 0; i < n; i++) out = f.filter(x, startMs + i * 16.7)
+    return out
+  }
+  check(
+    'the filter converges to a constant input',
+    Math.abs(settle(createOneEuroFilter({minCutoff: 1, beta: 0.8, derivativeCutoff: 1}), 0.7) - 0.7) < 1e-3
+  )
+
+  // The point of the filter: a hand held still is smoothed hard, a hand moving fast is not.
+  const jitter = createOneEuroFilter({minCutoff: 1, beta: 0.8, derivativeCutoff: 1})
+  let inputSwing = 0
+  let outputSwing = 0
+  let prevIn = null
+  let prevOut = null
+  for (let i = 0; i < 120; i++) {
+    // Deterministic alternating noise around a still position -- no Math.random, so the test
+    // cannot flake.
+    const x = 0.5 + (i % 2 ? 0.01 : -0.01)
+    const y = jitter.filter(x, i * 16.7)
+    if (i > 40) {
+      if (prevIn !== null) inputSwing += Math.abs(x - prevIn)
+      if (prevOut !== null) outputSwing += Math.abs(y - prevOut)
+    }
+    prevIn = x
+    prevOut = y
+  }
+  check(
+    'jitter on a still hand is attenuated at least 5x',
+    outputSwing * 5 < inputSwing,
+    `input ${inputSwing.toFixed(3)} -> output ${outputSwing.toFixed(3)}`
+  )
+
+  // ...while a genuine fast movement still gets through with little lag.
+  const ramp = createOneEuroFilter({minCutoff: 1, beta: 0.8, derivativeCutoff: 1})
+  let last = 0
+  for (let i = 0; i < 60; i++) last = ramp.filter(i * 0.01, i * 16.7)
+  const target = 59 * 0.01
+  check(
+    'a fast movement is tracked with little lag',
+    Math.abs(last - target) < 0.05,
+    `target ${target.toFixed(3)} vs ${last.toFixed(3)}`
   )
 
   // Tube builder.
