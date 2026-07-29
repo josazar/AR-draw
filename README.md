@@ -50,8 +50,22 @@ https://cdn.jsdelivr.net/npm/@8thwall/engine-binary@1/dist/xr.js
 ```
 
 Aucune authentification n'est requise à l'exécution. Le hand tracking n'est **pas** dans ce
-binaire, d'où MediaPipe. Les conditions du binaire sont dans `LICENSE` du paquet npm
-`@8thwall/engine-binary` ; à relire avant tout usage commercial.
+binaire, d'où MediaPipe.
+
+**L'attribution est obligatoire, et n'est pas désactivable.** Section 1.3.1.2 du *XR Engine License
+Agreement* : toute production utilisant le logiciel doit conserver l'identification de Niantic
+Spatial comme auteur, un avis de copyright, une référence à l'accord et une référence à l'exclusion
+de garantie. Le moteur n'expose aucune option pour retirer son logo, et le faire violerait la
+licence. Ces mentions sont réunies dans [`public/NOTICE.txt`](public/NOTICE.txt), accessible depuis
+le badge de version déplié.
+
+Le logo « Powered by 8th Wall » appartient à l'écran de **chargement** de XRExtras, pas à
+l'application en marche : il disparaît une fois le démarrage terminé. S'il reste affiché, c'est que
+le chargement n'aboutit pas.
+
+**Restriction commerciale** (section 1.2) : le logiciel ne peut pas servir dans un produit ou
+service à la fois payant **et** dont la valeur découle substantiellement de ses fonctionnalités.
+À lire avant d'envisager une monétisation.
 
 ## Lancer le projet
 

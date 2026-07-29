@@ -32,8 +32,19 @@
     <!-- 2D overlay used to draw the detected hand skeleton when debug mode is on. -->
     <canvas id="debugoverlay"></canvas>
 
-    <!-- Which build is actually on screen. Tap to expand with the commit and build time. -->
-    <button id="version" type="button" title="Version du build"></button>
+    <!--
+      Which build is actually on screen. Tap to expand with the commit, the build time, and the
+      attribution the XR Engine License Agreement requires (section 1.3.1.2: creator, copyright
+      notice, reference to the agreement and to the warranty disclaimer).
+    -->
+    <div id="version">
+      <button id="version-toggle" type="button" title="Version du build"></button>
+      <div id="version-details" hidden>
+        <div id="version-build"></div>
+        <div class="notice">Moteur XR par Niantic&nbsp;Spatial (8th&nbsp;Wall)<br>© 2026 Niantic Spatial, Inc.</div>
+        <a href="NOTICE.txt" target="_blank" rel="noopener">Licence &amp; garanties</a>
+      </div>
+    </div>
 
     <div id="hud">
       <div id="status" class="pill">Chargement…</div>

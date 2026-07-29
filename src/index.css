@@ -47,6 +47,17 @@ body {
   top: max(12px, env(safe-area-inset-top));
   left: max(10px, env(safe-area-inset-left));
   z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: 60vw;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+#version-toggle {
   appearance: none;
   border: none;
   border-radius: 8px;
@@ -55,15 +66,32 @@ body {
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   color: rgba(255, 255, 255, 0.75);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-  line-height: 1.35;
-  text-align: left;
+  font: inherit;
+}
+
+#version-toggle:active {
+  color: #fff;
+}
+
+#version-details {
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: rgba(255, 255, 255, 0.7);
   white-space: pre-line;
 }
 
-#version:active {
-  color: #fff;
+#version-details .notice {
+  margin-top: 5px;
+  white-space: normal;
+}
+
+#version-details a {
+  display: inline-block;
+  margin-top: 5px;
+  color: #64b5ff;
 }
 
 #hud {

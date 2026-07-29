@@ -1,0 +1,40 @@
+AR Draw — mentions légales et attributions
+==========================================
+
+Moteur XR (suivi du monde / SLAM, flux camera)
+----------------------------------------------
+Cree par Niantic Spatial, Inc., sous le nom "8th Wall".
+
+Copyright (c) 2026 Niantic Spatial, Inc. All rights reserved.
+
+Ce logiciel est utilise sous les termes du XR Engine License Agreement.
+Texte integral de l'accord :
+  https://github.com/8thwall/engine/blob/main/LICENSE
+  (egalement distribue dans le paquet npm @8thwall/engine-binary, fichier LICENSE)
+
+EXCLUSION DE GARANTIE : le logiciel est fourni "en l'etat", sans garantie
+d'aucune sorte, expresse ou implicite. Se reporter a la section du XR Engine
+License Agreement relative a l'exclusion de garanties (DISCLAIMER OF
+WARRANTIES) pour les termes applicables.
+
+Rien dans le present avis ne constitue ni ne saurait laisser entendre que cette
+application est liee a Niantic Spatial, ni qu'elle est parrainee, approuvee ou
+officiellement reconnue par Niantic Spatial.
+
+Restriction d'usage a noter (section 1.2 de l'accord) : le logiciel ne peut pas
+etre utilise dans un produit ou service (1) propose contre remuneration et
+(2) dont la valeur decoule, entierement ou substantiellement, des
+fonctionnalites du logiciel.
+
+
+Suivi de la main
+----------------
+MediaPipe Tasks Vision (HandLandmarker), Google LLC.
+Licence Apache 2.0 : https://www.apache.org/licenses/LICENSE-2.0
+Modele : hand_landmarker.task, publie par Google.
+
+
+Rendu 3D
+--------
+three.js — Copyright (c) 2010-2026 three.js authors.
+Licence MIT : https://github.com/mrdoob/three.js/blob/dev/LICENSE

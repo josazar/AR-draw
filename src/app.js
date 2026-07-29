@@ -23,7 +23,9 @@ const BUILD = {
 }
 
 const ui = {
-  version: document.getElementById('version'),
+  versionToggle: document.getElementById('version-toggle'),
+  versionDetails: document.getElementById('version-details'),
+  versionBuild: document.getElementById('version-build'),
   status: document.getElementById('status'),
   hint: document.getElementById('hint'),
   overlay: document.getElementById('debugoverlay'),
@@ -40,19 +42,13 @@ const setStatus = (text, kind = '') => {
 }
 
 // Collapsed by default so it stays out of the way; tapping reveals the commit and build time,
-// which is what actually identifies a deploy.
+// which is what actually identifies a deploy, plus the engine attribution the licence requires.
 const wireVersionBadge = () => {
-  let expanded = false
-  const render = () => {
-    ui.version.textContent = expanded
-      ? `v${BUILD.version}\n${BUILD.commit}\n${BUILD.time}`
-      : `v${BUILD.version}`
-  }
-  ui.version.addEventListener('click', () => {
-    expanded = !expanded
-    render()
+  ui.versionToggle.textContent = `v${BUILD.version}`
+  ui.versionBuild.textContent = `${BUILD.commit}\n${BUILD.time}`
+  ui.versionToggle.addEventListener('click', () => {
+    ui.versionDetails.hidden = !ui.versionDetails.hidden
   })
-  render()
 }
 wireVersionBadge()
 
