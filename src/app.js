@@ -29,6 +29,7 @@ const ui = {
   status: document.getElementById('status'),
   hint: document.getElementById('hint'),
   overlay: document.getElementById('debugoverlay'),
+  reticle: document.getElementById('reticle'),
   undo: document.getElementById('btn-undo'),
   clear: document.getElementById('btn-clear'),
   color: document.getElementById('btn-color'),
@@ -99,6 +100,11 @@ const ardrawPipelineModule = () => {
     filterV.reset()
     filterDepth.reset()
   }
+
+  // Touch drawing: press and hold in the centre zone, then move the phone to draw.
+  let touchPointerId = null
+  let touchTimer = null
+  let touchDrawing = false
 
   // Pinch debouncing.
   let pinchHeld = false
@@ -201,6 +207,78 @@ const ardrawPipelineModule = () => {
     resizeOverlay()
   }
 
+  const setReticle = (state) => {
+    ui.reticle.className = state
+  }
+
+  const inCentreZone = (clientX, clientY) => {
+    const dx = clientX - window.innerWidth / 2
+    const dy = clientY - window.innerHeight / 2
+    const radius = Math.min(window.innerWidth, window.innerHeight) * CONFIG.touchZoneRadius
+    return Math.hypot(dx, dy) <= radius
+  }
+
+  const startTouchStroke = () => {
+    touchTimer = null
+    // A hand stroke and a touch stroke at once would interleave points from two different places
+    // into one tube. The touch is the more deliberate gesture, so it wins.
+    if (pinchHeld) {
+      pinchHeld = false
+      pinchCandidate = false
+      pinchStreak = 0
+      drawing.end()
+    }
+    touchDrawing = true
+    setReticle('drawing')
+    drawing.begin(screenToWorld(0.5, 0.5, CONFIG.touchDrawDepth))
+  }
+
+  const releaseTouch = () => {
+    touchPointerId = null
+    if (touchTimer !== null) {
+      clearTimeout(touchTimer)
+      touchTimer = null
+    }
+    if (touchDrawing) {
+      touchDrawing = false
+      drawing.end()
+    }
+    setReticle('')
+  }
+
+  // Listening on the window rather than the canvas: the canvas is sized by the engine, and a
+  // press that missed it would silently do nothing. Pointer events rather than touch events, so
+  // the same path works with a mouse -- which is what makes this testable headlessly.
+  const wireTouchDrawing = () => {
+    window.addEventListener('pointerdown', (event) => {
+      if (touchPointerId !== null) return
+      // Never steal a press meant for a control.
+      if (event.target?.closest?.('#controls, #version')) return
+      if (!inCentreZone(event.clientX, event.clientY)) return
+
+      touchPointerId = event.pointerId
+      setReticle('armed')
+      touchTimer = setTimeout(startTouchStroke, CONFIG.longPressMs)
+    })
+
+    const onEnd = (event) => {
+      if (event.pointerId !== touchPointerId) return
+      releaseTouch()
+    }
+    window.addEventListener('pointerup', onEnd)
+    window.addEventListener('pointercancel', onEnd)
+  }
+
+  // Returns true when touch drawing owns this frame, so hand tracking sits it out.
+  const updateTouchDrawing = () => {
+    if (!touchDrawing) return false
+    // Recomputed every frame: the point is fixed relative to the camera, so the phone's motion
+    // through the room is what lays down the tube.
+    drawing.extend(screenToWorld(0.5, 0.5, CONFIG.touchDrawDepth))
+    setStatus(`Dessin au doigt · ${(CONFIG.touchDrawDepth * 100).toFixed(0)} cm`, 'drawing')
+    return true
+  }
+
   const toScreenPoints = (raw) =>
     raw.map(({x, y}) => imageToScreen(x, y, cameraViewport, arCanvas.width, arCanvas.height))
 
@@ -233,6 +311,7 @@ const ardrawPipelineModule = () => {
       initScene()
       drawing = createDrawing(scene)
       wireControls()
+      wireTouchDrawing()
 
       canvas.addEventListener('touchmove', (event) => event.preventDefault(), {passive: false})
 
@@ -253,6 +332,7 @@ const ardrawPipelineModule = () => {
             depth: smoothedDepth,
             pinchRatio: lastPinchRatio,
             strokes: drawing.strokeCount,
+            touchDrawing,
             trackingStatus,
             trackingReason,
             poseJitterMm: Number(poseJitterMm.toFixed(2)),
@@ -311,6 +391,8 @@ const ardrawPipelineModule = () => {
       }
       lastCameraPos.copy(cameraWorldPos)
       hasLastCameraPos = true
+
+      if (updateTouchDrawing()) return
 
       if (!tracker) return
 

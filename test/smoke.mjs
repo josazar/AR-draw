@@ -36,6 +36,8 @@ const stubEngine = () => {
           const camera = new window.THREE.PerspectiveCamera(60, 1, 0.01, 100)
           scene.add(camera)
           xrScene = {scene, camera, renderer: null}
+          // Exposed so a test can move the camera, standing in for the phone moving.
+          window.__xrSceneRef = xrScene
         }
         return xrScene
       },
@@ -352,6 +354,61 @@ unit.forEach(record)
 
 const pageErrors = await page.evaluate(() => window.__errors)
 record(`${pageErrors.length === 0 ? 'PASS' : 'FAIL'} no uncaught page errors :: ${JSON.stringify(pageErrors)}`)
+
+// --- touch drawing: press and hold, then move the phone -----------------------------------------
+{
+  const before = await page.evaluate(() => window.__ardraw.state.strokes)
+
+  // Press in the middle of the screen and hold past the long-press threshold.
+  await page.mouse.move(195, 422)
+  await page.mouse.down()
+  const armed = await page.evaluate(() => document.getElementById('reticle').className)
+  await page.waitForTimeout(500)
+  const drawingNow = await page.evaluate(() => window.__ardraw.state.touchDrawing)
+
+  // Now walk the camera forward, which is what actually lays down the tube in this mode.
+  await page.evaluate(() => {
+    const mod = window.__mods.find((m) => m.name === 'ardraw')
+    const {camera} = window.__xrSceneRef
+    for (let i = 1; i <= 12; i++) {
+      camera.position.set(i * 0.05, 1.4, 0)
+      camera.updateMatrixWorld()
+      mod.onUpdate({processGpuResult: {}})
+    }
+  })
+
+  await page.mouse.up()
+  const after = await page.evaluate(() => window.__ardraw.state)
+
+  record(`${armed === 'armed' ? 'PASS' : 'FAIL'} the reticle arms on press :: "${armed}"`)
+  record(`${drawingNow ? 'PASS' : 'FAIL'} holding past the threshold starts a stroke`)
+  record(
+    `${after.strokes === before + 1 ? 'PASS' : 'FAIL'} releasing closes exactly one tube` +
+      ` :: ${before} -> ${after.strokes}`
+  )
+  record(`${!after.touchDrawing ? 'PASS' : 'FAIL'} touch drawing stops on release`)
+
+  // A quick tap must not leave a mark.
+  const beforeTap = after.strokes
+  await page.mouse.move(195, 422)
+  await page.mouse.down()
+  await page.waitForTimeout(80)
+  await page.mouse.up()
+  const afterTap = await page.evaluate(() => window.__ardraw.state.strokes)
+  record(`${afterTap === beforeTap ? 'PASS' : 'FAIL'} a short tap draws nothing :: ${afterTap}`)
+
+  // Pressing outside the centre zone must not arm either.
+  await page.mouse.move(30, 120)
+  await page.mouse.down()
+  const outside = await page.evaluate(() => document.getElementById('reticle').className)
+  await page.waitForTimeout(500)
+  const outsideDrawing = await page.evaluate(() => window.__ardraw.state.touchDrawing)
+  await page.mouse.up()
+  record(
+    `${outside === '' && !outsideDrawing ? 'PASS' : 'FAIL'} pressing outside the zone does nothing` +
+      ` :: "${outside}" drawing=${outsideDrawing}`
+  )
+}
 
 // --- the scale escape hatch ---------------------------------------------------------------------
 // Scale cannot be changed after XR8.run(), so comparing the two modes on a real device depends on

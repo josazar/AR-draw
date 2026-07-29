@@ -141,7 +141,7 @@ Le workflow `.github/workflows/deploy.yml` fait la même chose. **À activer une
 
 ## Utilisation
 
-En haut à gauche, un **badge de version** (`v0.6.0`). Le toucher déplie le commit et la date de
+En haut à gauche, un **badge de version** (`v0.7.0`). Le toucher déplie le commit et la date de
 build : c'est ce qui identifie précisément le déploiement qu'on a sous les yeux.
 
 | Bouton | Effet |
@@ -151,6 +151,22 @@ build : c'est ce qui identifie précisément le déploiement qu'on a sous les ye
 | **Couleur** | Couleur du prochain tube |
 | **Prof. auto / fixe** | Profondeur métrique déduite de la main, ou figée à 45 cm |
 | **Debug** | Affiche le squelette détecté et les valeurs en direct |
+
+### Deux façons de dessiner
+
+**Au pincement.** Pouce et index se rejoignent devant la caméra, le tube suit le bout de l'index.
+
+**Au doigt sur l'écran** — le téléphone devient le pinceau. Appui long (350 ms) dans le cercle au
+centre de l'écran : le point de dessin se fixe à **30 cm droit devant l'objectif**, et c'est en
+**déplaçant le téléphone** que l'on trace. Relâcher ferme le tube. Le réticule central indique la
+zone : blanc au repos, jaune pendant l'appui, vert pendant le tracé.
+
+Ce mode ne dépend pas du suivi de main : il fonctionne même si MediaPipe n'a pas pu charger. Un
+appui court ne laisse aucune trace, et un appui hors de la zone centrale ou sur un bouton est
+ignoré. Si un tracé au pincement est en cours, l'appui long prend la main — mélanger deux sources
+de points dans un même tube n'aurait pas de sens.
+
+`touchDrawDepth`, `touchZoneRadius` et `longPressMs` dans `config.js`.
 
 ### Il n'y a pas de calibrage
 
@@ -254,7 +270,7 @@ npm run serve                                            # dans un autre termina
 npm run smoke -- http://127.0.0.1:5173/
 ```
 
-33 assertions : câblage du pipeline, chargement réel de MediaPipe, correspondance image → écran
+41 assertions : câblage du pipeline, chargement réel de MediaPipe, correspondance image → écran
 (dont deux tests qui verrouillent le sens des axes : main à droite → tube à droite, main en haut →
 tube en haut), profondeur métrique retrouvée à 1 % sur des mains synthétiques de tailles
 différentes, comportement du filtre One Euro, invariance d'échelle du pincement, construction et

@@ -56,6 +56,18 @@ export const CONFIG = {
   // pulled closer while drawing; release and pinch again to draw at a new distance.
   lockDepthDuringStroke: true,
 
+  // --- Touch drawing --------------------------------------------------------------------------
+  // Press and hold in the middle of the screen and the phone becomes the brush: the drawing point
+  // sits a fixed distance straight ahead of the lens, so moving the phone is what draws. Same
+  // result as pinching in front of the camera, without needing the hand to be tracked -- it works
+  // even if hand tracking never loaded.
+  touchDrawDepth: 0.30,
+  // Radius of the press zone, as a fraction of the screen's shorter side. Kept well away from the
+  // controls so a press never means two things at once.
+  touchZoneRadius: 0.22,
+  // Hold time before drawing starts. Long enough that a stray tap does not leave a mark.
+  longPressMs: 350,
+
   // --- Smoothing ------------------------------------------------------------------------------
   // One Euro filter, applied to the MEASUREMENT (fingertip position on screen, and depth) rather
   // than to the resulting world position. Filtering the world position would fight SLAM: holding
