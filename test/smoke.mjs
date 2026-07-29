@@ -83,12 +83,12 @@ await page.goto(URL_UNDER_TEST, {waitUntil: 'load'})
 const registered = await page.evaluate(() => (window.__mods || []).map((m) => m.name))
 record(`${registered.includes('ardraw') ? 'PASS' : 'FAIL'} pipeline registers ardraw :: ${registered.join(',')}`)
 
-// Metric depth is meaningless unless SLAM reports real metres. 'responsive' scales the world from
-// an assumed camera height instead, which puts content at the wrong distance and makes it slide
-// against the room as the phone moves.
+// Scale must be locked at init ('responsive'), not re-estimated as the device moves
+// ('absolute'). A refined scale estimate resizes everything already drawn, which is what made
+// tubes shrink after walking out of a room and back.
 const xrConfig = await page.evaluate(() => window.__xrControllerConfig)
 record(
-  `${xrConfig?.scale === 'absolute' ? 'PASS' : 'FAIL'} SLAM is configured for absolute scale` +
+  `${xrConfig?.scale === 'responsive' ? 'PASS' : 'FAIL'} SLAM scale is locked at init` +
     ` :: ${JSON.stringify(xrConfig)}`
 )
 
@@ -352,6 +352,23 @@ unit.forEach(record)
 
 const pageErrors = await page.evaluate(() => window.__errors)
 record(`${pageErrors.length === 0 ? 'PASS' : 'FAIL'} no uncaught page errors :: ${JSON.stringify(pageErrors)}`)
+
+// --- the scale escape hatch ---------------------------------------------------------------------
+// Scale cannot be changed after XR8.run(), so comparing the two modes on a real device depends on
+// this query parameter working.
+{
+  const altPage = await browser.newPage({viewport: {width: 390, height: 844}})
+  await altPage.route(/(xr\.js|xr-slam\.js|xrextras\.js|landing-page\.js)(\?|$)/, (r) => r.abort())
+  await altPage.addInitScript(stubEngine)
+  const sep = URL_UNDER_TEST.includes('?') ? '&' : '?'
+  await altPage.goto(`${URL_UNDER_TEST}${sep}scale=absolute`, {waitUntil: 'load'})
+  const altConfig = await altPage.evaluate(() => window.__xrControllerConfig)
+  record(
+    `${altConfig?.scale === 'absolute' ? 'PASS' : 'FAIL'} ?scale=absolute overrides the default` +
+      ` :: ${JSON.stringify(altConfig)}`
+  )
+  await altPage.close()
+}
 
 // --- regression: a missing model must fail, not hang --------------------------------------------
 // Handing MediaPipe a URL it cannot load does not reject -- it logs "Unable to open zip archive"

@@ -141,7 +141,7 @@ Le workflow `.github/workflows/deploy.yml` fait la même chose. **À activer une
 
 ## Utilisation
 
-En haut à gauche, un **badge de version** (`v0.5.0`). Le toucher déplie le commit et la date de
+En haut à gauche, un **badge de version** (`v0.6.0`). Le toucher déplie le commit et la date de
 build : c'est ce qui identifie précisément le déploiement qu'on a sous les yeux.
 
 | Bouton | Effet |
@@ -183,13 +183,22 @@ confond facilement :
 
 Un tube déjà posé est de la géométrie statique : s'il tremble, ce n'est jamais MediaPipe.
 
-### Échelle absolue
+### Échelle : stable plutôt que juste
 
-`XrController.configure({scale: 'absolute'})` fait remonter au SLAM des translations en **mètres
-réels**. Le défaut, `'responsive'`, déduit l'échelle du monde d'une hauteur de caméra **supposée**
-(1,4 m) : téléphone tenu à 1 m, les unités sont fausses de 40 %. Comme la profondeur est estimée en
-mètres réels, ce désaccord d'échelle est une erreur de parallaxe — le contenu est placé à la
-mauvaise distance et glisse par rapport à la pièce quand on bouge.
+`XrController.configure({scale})` accepte deux modes, et le choix n'est pas celui qu'on croit.
+
+- **`'responsive'` (utilisé ici)** — l'échelle du monde est **figée à l'initialisation**, déduite
+  d'une hauteur de caméra supposée. Métriquement approximatif : téléphone tenu à 1 m au lieu de
+  1,4 m, les unités sont fausses de 40 %. Mais **le contenu ne change jamais de taille**.
+- **`'absolute'`** — échelle métrique brute du VIO monoculaire. Honnête, mais l'estimation
+  **s'affine à mesure que l'appareil se déplace**, et à chaque révision tout ce qui est déjà dessiné
+  change de taille. Sortir d'une pièce et y revenir déclenche précisément ce recalcul.
+
+Un dessin qui rétrécit est pire qu'un dessin faux de 20 % : la stabilité l'emporte. `?scale=absolute`
+permet de comparer les deux sur un vrai appareil — le paramètre doit être lu avant `XR8.run()`, le
+moteur refusant tout changement d'échelle ensuite.
+
+`depthScale` dans `config.js` corrige un écart systématique de taille sans toucher au mode.
 
 ## Réglages
 

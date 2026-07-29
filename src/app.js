@@ -392,7 +392,7 @@ const ardrawPipelineModule = () => {
         )
         if (measured !== null) {
           smoothedDepth = THREE.MathUtils.clamp(
-            filterDepth.filter(measured, now), CONFIG.depthMin, CONFIG.depthMax
+            filterDepth.filter(measured * CONFIG.depthScale, now), CONFIG.depthMin, CONFIG.depthMax
           )
         }
       } else {
@@ -430,7 +430,8 @@ const ardrawPipelineModule = () => {
         drawDebugOverlay(screenPoints)
         setStatus(
           `prof ${placementDepth.toFixed(2)}m${strokeDepth === null ? '' : ' fige'} · ` +
-          `slam ${trackingStatus || '?'} ${poseJitterMm.toFixed(1)}mm/f · ` +
+          `slam ${trackingStatus || '?'} ${poseJitterMm.toFixed(1)}mm/f ` +
+          `${(window.__ardrawScale || '?').slice(0, 4)} · ` +
           `pinch ${lastPinchRatio.toFixed(2)} · ${detectMsEma.toFixed(0)}ms/${detectStride}`,
           pinchHeld ? 'drawing' : ''
         )
@@ -465,12 +466,20 @@ const onxrloaded = () => {
     ardrawPipelineModule(),
   ])
 
-  // 'absolute' makes SLAM report translation in real metres. The default, 'responsive', derives
-  // world scale from an ASSUMED starting camera height (1.4 m), so holding the phone at 1.0 m
-  // leaves world units 40% off. Our depth estimate is genuine metres, and a scale mismatch
-  // between the two is a parallax error: content sits at the wrong distance and appears to slide
-  // against the room as the phone moves.
-  XR8.XrController.configure({scale: 'absolute'})
+  // 'responsive' locks world scale at initialisation, from the assumed starting camera height.
+  // That makes it metrically approximate but STABLE. 'absolute' uses the raw monocular VIO scale
+  // estimate, which is metrically honest but gets refined as the device moves -- and when it is
+  // refined, everything already placed changes size. Walking out of a room and back is exactly
+  // the case that triggers a re-estimate, and a drawing that shrinks is worse than a drawing
+  // that is 20% off, so stability wins.
+  //
+  // ?scale=absolute opts back in, for comparing the two on a real device. It has to be decided
+  // here: the engine refuses a scale change after XR8.run().
+  const scale = new URLSearchParams(location.search).get('scale') === 'absolute'
+    ? 'absolute'
+    : 'responsive'
+  XR8.XrController.configure({scale})
+  window.__ardrawScale = scale
 
   XR8.run({canvas: document.getElementById('camerafeed')})
 }

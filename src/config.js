@@ -43,6 +43,12 @@ export const CONFIG = {
   // Used when auto depth is switched off.
   depthFixed: 0.45,
 
+  // Correction factor on the estimated distance. The depth maths is metric, but in the default
+  // 'responsive' scale mode world units are only approximately metres -- they are pinned to an
+  // assumed starting camera height. Raise this if tubes land consistently too close, lower it if
+  // they land too far.
+  depthScale: 1.0,
+
   // Freeze the distance for the duration of a stroke, fixing it at the moment the pinch closes.
   // The depth estimate is the least certain part of the placement, and letting it wander mid
   // stroke bends the tube towards and away from the camera as the hand rotates -- which reads as
