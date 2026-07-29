@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+
+    <title>AR Draw — dessin spatial au doigt</title>
+    <meta name="description" content="Pincez le pouce et l'index pour dessiner des tubes 3D ancres dans l'espace.">
+
+    <!--
+      8th Wall engine binary. Provides the camera feed and, crucially, SLAM world tracking, which
+      is what keeps a drawing anchored in space when the phone moves. iOS Safari has no WebXR, so
+      this is the piece doing the heavy lifting.
+
+      data-preload-chunks="slam" pulls the SLAM chunk up front instead of on first use.
+      No account and no app key are required: the hosted 8th Wall platform shut down on
+      2026-02-28 and the engine is now distributed freely (binary licence, see README).
+    -->
+    <script src="https://cdn.jsdelivr.net/npm/@8thwall/engine-binary@1/dist/xr.js" async crossorigin="anonymous" data-preload-chunks="slam"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@8thwall/xrextras@1/dist/xrextras.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@8thwall/landing-page@1/dist/landing-page.js" crossorigin="anonymous"></script>
+
+    <link rel="stylesheet" href="src/index.css">
+  </head>
+  <body>
+    <!-- 8th Wall draws the camera feed and the three.js scene here. -->
+    <canvas id="camerafeed"></canvas>
+
+    <!-- 2D overlay used to draw the detected hand skeleton when debug mode is on. -->
+    <canvas id="debugoverlay"></canvas>
+
+    <div id="hud">
+      <div id="status" class="pill">Chargement…</div>
+      <div id="hint" class="pill hint">Pincez pouce + index pour dessiner</div>
+    </div>
+
+    <div id="controls">
+      <button id="btn-undo" type="button" title="Annuler le dernier tube">Annuler</button>
+      <button id="btn-clear" type="button" title="Tout effacer">Effacer</button>
+      <button id="btn-color" type="button" title="Changer de couleur">Couleur</button>
+      <button id="btn-depth" type="button" title="Profondeur auto ou fixe">Prof.&nbsp;auto</button>
+      <button id="btn-calib" type="button" title="Corriger l'alignement main/ecran">Calibrer</button>
+      <button id="btn-debug" type="button" title="Afficher le squelette detecte">Debug</button>
+    </div>
+
+    <script type="module" src="src/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,120 @@
+:root {
+  color-scheme: dark;
+  --pad: max(12px, env(safe-area-inset-bottom));
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: #000;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  /* Stop iOS Safari from treating drags on the canvas as page gestures. */
+  touch-action: none;
+  overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#camerafeed {
+  position: absolute;
+  inset: 0;
+}
+
+/* Sits on top of the AR canvas, never eats touches. */
+#debugoverlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: none;
+}
+
+#debugoverlay.visible {
+  display: block;
+}
+
+#hud {
+  position: absolute;
+  top: max(12px, env(safe-area-inset-top));
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.pill {
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+  text-align: center;
+  max-width: 88vw;
+}
+
+.pill.hint {
+  font-weight: 400;
+  opacity: 0.75;
+  font-size: 12px;
+}
+
+/* Turns green while a stroke is being drawn, so the pinch state is unambiguous. */
+#status.drawing {
+  background: rgba(52, 199, 89, 0.85);
+}
+
+#status.error {
+  background: rgba(255, 69, 58, 0.85);
+}
+
+#controls {
+  position: absolute;
+  bottom: var(--pad);
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 10px;
+  z-index: 10;
+}
+
+#controls button {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  padding: 10px 15px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+}
+
+#controls button:active {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+#controls button.on {
+  background: rgba(255, 255, 255, 0.9);
+  color: #000;
+}
