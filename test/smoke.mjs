@@ -125,11 +125,12 @@ record(
 const updateResult = await page.evaluate(() => {
   const mod = window.__mods.find((m) => m.name === 'ardraw')
   try {
-    for (let i = 0; i < 5; i++) mod.onUpdate({processCpuResult: {}})
+    const ok = {reality: {trackingStatus: 'NORMAL', trackingReason: 'UNSPECIFIED'}}
+    for (let i = 0; i < 5; i++) mod.onUpdate({processCpuResult: ok})
     for (const id of ['btn-debug', 'btn-color', 'btn-undo', 'btn-clear']) {
       document.getElementById(id).click()
     }
-    mod.onUpdate({processCpuResult: {reality: {trackingStatus: 'NORMAL'}}})
+    mod.onUpdate({processCpuResult: ok})
     return {ok: true}
   } catch (e) {
     return {ok: false, why: String((e && e.stack) || e)}
@@ -180,7 +181,7 @@ record(`${updateResult.ok ? 'PASS' : 'FAIL'} onUpdate + controls :: ${updateResu
     camera.position.set(0, 0, 0)
     camera.quaternion.identity()
     camera.updateMatrixWorld()
-    mod.onUpdate({processCpuResult: {}})
+    mod.onUpdate({processCpuResult: {reality: {trackingStatus: 'NORMAL'}}})
     return window.__ardraw.state.drawDepth
   })
   record(`${Math.abs(reach - 2) < 1e-9 ? 'PASS' : 'FAIL'} the distance survives a frame :: ${reach}`)
@@ -209,7 +210,7 @@ record(`${updateResult.ok ? 'PASS' : 'FAIL'} onUpdate + controls :: ${updateResu
     for (let i = 1; i <= 20; i++) {
       camera.position.set(i * 0.05, 1.4, 0)
       camera.updateMatrixWorld()
-      mod.onUpdate({processCpuResult: {}})
+      mod.onUpdate({processCpuResult: {reality: {trackingStatus: 'NORMAL'}}})
     }
   })
 
@@ -256,6 +257,96 @@ record(`${updateResult.ok ? 'PASS' : 'FAIL'} onUpdate + controls :: ${updateResu
   const sliderDrawing = await page.evaluate(() => window.__ardraw.state.touchDrawing)
   await page.mouse.up()
   record(`${!sliderDrawing ? 'PASS' : 'FAIL'} holding the slider does not draw`)
+}
+
+// --- tracking robustness ------------------------------------------------------------------------
+{
+  // Drawing while SLAM is degraded records points against a pose that is about to be corrected,
+  // so the stroke must pause rather than lay them down.
+  const paused = await page.evaluate(async () => {
+    const mod = window.__mods.find((m) => m.name === 'ardraw')
+    const {camera} = window.__xrSceneRef
+    const good = {reality: {trackingStatus: 'NORMAL'}}
+    const bad = {reality: {trackingStatus: 'LIMITED', trackingReason: 'RELOCALIZING'}}
+
+    // An earlier test left debug mode on, which replaces the plain message with the metrics line.
+    const debugButton = document.getElementById('btn-debug')
+    if (debugButton.classList.contains('on')) debugButton.click()
+
+    camera.position.set(0, 1.4, 0)
+    camera.updateMatrixWorld()
+    mod.onUpdate({processCpuResult: good})
+
+    const before = window.__ardraw.state.pausedFrames
+    // Pretend a stroke is open by pressing, then degrade tracking.
+    for (let i = 1; i <= 6; i++) {
+      camera.position.set(i * 0.05, 1.4, 0)
+      camera.updateMatrixWorld()
+      mod.onUpdate({processCpuResult: bad})
+    }
+    return {
+      pausedDelta: window.__ardraw.state.pausedFrames - before,
+      status: document.getElementById('status').textContent,
+    }
+  })
+  record(
+    `${paused.status.includes('Suivi perdu') ? 'PASS' : 'FAIL'} a relocalisation is explained in` +
+      ` plain words :: "${paused.status}"`
+  )
+
+  // Smooth motion must not be mistaken for a relocalisation.
+  const smoothRun = await page.evaluate(() => {
+    const mod = window.__mods.find((m) => m.name === 'ardraw')
+    const {camera} = window.__xrSceneRef
+    const good = {reality: {trackingStatus: 'NORMAL'}}
+    const before = window.__ardraw.state.jumpsCompensated
+    for (let i = 0; i < 40; i++) {
+      camera.position.set(i * 0.01, 1.4, 0)
+      camera.updateMatrixWorld()
+      mod.onUpdate({processCpuResult: good})
+    }
+    return window.__ardraw.state.jumpsCompensated - before
+  })
+  record(`${smoothRun === 0 ? 'PASS' : 'FAIL'} steady motion is not read as a jump :: ${smoothRun}`)
+
+  // A single-frame teleport is a relocalisation, and the drawing must stay put relative to what
+  // the camera sees rather than following the world frame.
+  const jump = await page.evaluate(() => {
+    const THREE = window.THREE
+    const mod = window.__mods.find((m) => m.name === 'ardraw')
+    const {camera} = window.__xrSceneRef
+    const root = window.__ardraw.contentRoot
+    const good = {reality: {trackingStatus: 'NORMAL'}}
+
+    // An arbitrary point of the drawing, in content space.
+    const local = new THREE.Vector3(0.2, 1.3, -0.5)
+
+    const cameraRelative = () => {
+      const world = local.clone().applyMatrix4(root.matrix)
+      return world.applyMatrix4(camera.matrixWorldInverse)
+    }
+
+    const before = cameraRelative()
+    const jumpsBefore = window.__ardraw.state.jumpsCompensated
+
+    // Teleport: a metre and a big rotation in one frame, which no hand achieves.
+    camera.position.set(1.4, 1.9, 0.8)
+    camera.rotateY(0.7)
+    camera.updateMatrixWorld()
+    camera.matrixWorldInverse.copy(camera.matrixWorld).invert()
+    mod.onUpdate({processCpuResult: good})
+
+    const after = cameraRelative()
+    return {
+      detected: window.__ardraw.state.jumpsCompensated - jumpsBefore,
+      drift: before.distanceTo(after),
+    }
+  })
+  record(`${jump.detected === 1 ? 'PASS' : 'FAIL'} a teleport is detected as a jump :: ${jump.detected}`)
+  record(
+    `${jump.drift < 1e-6 ? 'PASS' : 'FAIL'} the drawing keeps its place relative to the camera` +
+      ` :: drift ${jump.drift.toExponential(2)} m`
+  )
 }
 
 // --- pure logic -----------------------------------------------------------------------------

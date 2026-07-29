@@ -141,7 +141,7 @@ Le workflow `.github/workflows/deploy.yml` fait la même chose. **À activer une
 
 ## Utilisation
 
-En haut à gauche, un **badge de version** (`v0.9.0`). Le toucher déplie le commit et la date de
+En haut à gauche, un **badge de version** (`v0.10.0`). Le toucher déplie le commit et la date de
 build : c'est ce qui identifie précisément le déploiement qu'on a sous les yeux.
 
 | Bouton | Effet |
@@ -184,6 +184,37 @@ formule.
 Pour contrôler que le suivi fonctionne : **Debug** superpose le squelette détecté, avec un cercle
 jaune sur le bout de l'index — le point qui dessine réellement. S'il suit votre doigt, tout est
 bon.
+
+### Stabilité dans l'espace
+
+Le SLAM monoculaire a une faiblesse structurelle qu'il faut connaître : **la rotation pure est son
+pire cas**. Tourner sur place ne produit aucune parallaxe, donc le système ne peut trianguler aucun
+point nouveau ; la carte se dégrade, et au retour il relocalise — souvent avec un repère décalé.
+D'où des traits qui ne sont plus au même endroit après un aller-retour angulaire.
+
+Trois mesures dans l'application :
+
+1. **Le tracé se met en pause** dès que `trackingStatus` quitte `NORMAL`. Les points enregistrés
+   pendant une relocalisation seraient placés contre une pose sur le point d'être corrigée, donc
+   forcément au mauvais endroit. Le trait reprend là où il s'était arrêté.
+2. **Les sauts de repère sont compensés.** Une relocalisation se manifeste par une discontinuité
+   sur **une seule frame** — le mouvement réel, lui, est continu. Un pic par rapport à la médiane
+   des dernières frames est donc discriminant. Quand il est détecté, la transformation
+   `B·inv(A)` est appliquée à l'ensemble du dessin, qui reste ainsi là où on l'a laissé.
+3. **Les causes sont nommées à l'écran** plutôt que codées : « surface trop uniforme », « mouvement
+   trop rapide », « lumière insuffisante » — c'est `trackingReason` traduit en action.
+
+Compenser, c'est préférer la continuité visuelle à l'estimation corrigée du SLAM. C'est le bon
+arbitrage ici : le dessin est le résultat, et le voir se téléporter est pire que le voir à quelques
+centimètres près.
+
+**Ce qui aide vraiment, côté usage** : translater plutôt que pivoter. Un pas de côté donne de la
+parallaxe, une rotation sur place n'en donne aucune. Viser des surfaces texturées plutôt qu'un mur
+uni, et éviter les mouvements brusques.
+
+**Ce qui manque, et qu'on ne peut pas ajouter** : des ancres persistantes. Retrouver un dessin au
+même endroit après avoir quitté la page demanderait un VPS — Lightship, justement absent du binaire
+libre.
 
 ### Diagnostiquer un tremblement
 
@@ -292,7 +323,7 @@ npm run serve                                            # dans un autre termina
 npm run smoke -- http://127.0.0.1:5173/
 ```
 
-38 assertions : câblage du pipeline, verrouillage de l'échelle SLAM, réglage de la distance par le
+42 assertions : câblage du pipeline, verrouillage de l'échelle SLAM, réglage de la distance par le
 curseur et sa prévisualisation, déclenchement du tracé (appui long, appui court ignoré, hors zone
 ignoré, curseur ignoré), tracé pendant un déplacement simulé du téléphone, comportement du filtre
 One Euro, lissage de la ligne centrale, construction et cycle de vie des tubes. Le moteur 8th

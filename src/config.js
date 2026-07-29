@@ -24,6 +24,22 @@ export const CONFIG = {
   drawDepthMin: 0.15,
   drawDepthMax: 2.5,
 
+  // --- Tracking robustness ----------------------------------------------------------------------
+  // Points recorded while SLAM is not tracking properly are placed against a pose that is about to
+  // be corrected, so they land in the wrong place. Rather than draw them anyway, a stroke pauses
+  // and resumes where it left off.
+  pauseDrawingWhenTrackingDegraded: true,
+
+  // Relocalisation moves the world frame under the drawing: come back to a spot and the tubes are
+  // somewhere else. That shows up as a single-frame discontinuity in the camera pose, which is
+  // distinguishable from real motion because real motion is continuous. A frame is treated as a
+  // jump when its pose delta is both absolutely large and far out of line with recent frames.
+  compensateTrackingJumps: true,
+  jumpMinMetres: 0.03,
+  jumpRelativeToMedian: 5,
+  // Frames of delta history used for the median. Roughly half a second.
+  jumpHistoryFrames: 15,
+
   // --- Smoothing --------------------------------------------------------------------------------
   // One Euro filter on the brush's world position. In this mode the brush is rigidly attached to
   // the camera, so its world position is the camera pose -- and SLAM pose noise lands directly in

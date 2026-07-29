@@ -58,6 +58,10 @@ const ardrawPipelineModule = () => {
   let drawing
   let debugVisible = false
 
+  // Every stroke lives under this group rather than directly in the scene, so the whole drawing
+  // can be moved as one when SLAM shifts the world frame beneath it.
+  let contentRoot
+
   // Press and hold in the centre zone, then move the phone to draw.
   let touchPointerId = null
   let touchTimer = null
@@ -84,7 +88,15 @@ const ardrawPipelineModule = () => {
   const cameraWorldPos = new THREE.Vector3()
   let lastDotPx = -1
 
-  const stats = {frames: 0}
+  // Pose-jump detection. Real motion is continuous; a relocalisation is a single-frame
+  // discontinuity, so a spike against the recent median is the discriminator.
+  const previousCameraMatrix = new THREE.Matrix4()
+  let hasPreviousCameraMatrix = false
+  const deltaHistory = []
+  const jumpTransform = new THREE.Matrix4()
+  const inversePrevious = new THREE.Matrix4()
+
+  const stats = {frames: 0, jumpsCompensated: 0, pausedFrames: 0}
 
   const initScene = () => {
     // MeshLambertMaterial needs light to be visible at all.
@@ -92,6 +104,10 @@ const ardrawPipelineModule = () => {
     const key = new THREE.DirectionalLight(0xffffff, 1.0)
     key.position.set(2, 4, 3)
     scene.add(key)
+
+    contentRoot = new THREE.Group()
+    contentRoot.matrixAutoUpdate = false
+    scene.add(contentRoot)
 
     // Must sit above y=0 for SLAM to initialise with a sensible ground plane.
     camera.position.set(0, 1.4, 0)
@@ -130,6 +146,65 @@ const ardrawPipelineModule = () => {
     lastDotPx = clamped
     ui.reticleDot.style.width = `${clamped}px`
     ui.reticleDot.style.height = `${clamped}px`
+  }
+
+  // Human, actionable wording. "LIMITED" tells the user nothing; "aim at something textured" does.
+  const trackingMessage = () => {
+    // null = the engine has not reported yet. Treated as fine rather than degraded: a missing
+    // field must never be able to block drawing forever.
+    if (trackingStatus === null || trackingStatus === 'NORMAL') return null
+    switch (trackingReason) {
+      case 'INITIALIZING': return 'Initialisation du suivi — bougez lentement le téléphone'
+      case 'RELOCALIZING': return 'Suivi perdu — revenez vers ce que vous filmiez'
+      case 'EXCESSIVE_MOTION': return 'Mouvement trop rapide — ralentissez'
+      case 'INSUFFICIENT_FEATURES': return 'Surface trop uniforme — visez une zone texturée'
+      case 'INSUFFICIENT_LIGHT': return 'Lumière insuffisante'
+      default: return 'Suivi dégradé'
+    }
+  }
+
+  const trackingIsGood = () => trackingStatus === null || trackingStatus === 'NORMAL'
+
+  // A relocalisation moves the world frame under the drawing. If the camera pose jumped from A to
+  // B while the phone did not physically move, the frame shifted by B*inv(A); applying that same
+  // transform to the content keeps it where the user last saw it.
+  //
+  // Compensating means preferring visual continuity over SLAM's corrected estimate. That is the
+  // right call here: the drawing is the artefact, and having it teleport is worse than having it
+  // a few centimetres off.
+  const compensateJumpIfAny = () => {
+    const currentMatrix = camera.matrixWorld
+
+    if (!hasPreviousCameraMatrix) {
+      previousCameraMatrix.copy(currentMatrix)
+      hasPreviousCameraMatrix = true
+      return false
+    }
+
+    const delta = cameraWorldPos.distanceTo(lastCameraPos)
+
+    let jumped = false
+    if (CONFIG.compensateTrackingJumps && deltaHistory.length >= CONFIG.jumpHistoryFrames) {
+      const sorted = [...deltaHistory].sort((a, b) => a - b)
+      const median = sorted[sorted.length >> 1]
+      jumped = delta > CONFIG.jumpMinMetres && delta > median * CONFIG.jumpRelativeToMedian
+    }
+
+    if (jumped) {
+      inversePrevious.copy(previousCameraMatrix).invert()
+      jumpTransform.multiplyMatrices(currentMatrix, inversePrevious)
+      contentRoot.matrix.premultiply(jumpTransform)
+      contentRoot.matrixWorldNeedsUpdate = true
+      stats.jumpsCompensated += 1
+      // The history describes motion before the jump and would otherwise mask the next one.
+      deltaHistory.length = 0
+    } else {
+      deltaHistory.push(delta)
+      if (deltaHistory.length > CONFIG.jumpHistoryFrames) deltaHistory.shift()
+    }
+
+    previousCameraMatrix.copy(currentMatrix)
+    return jumped
   }
 
   const setReticle = (state) => {
@@ -230,7 +305,7 @@ const ardrawPipelineModule = () => {
       ;({scene, camera} = XR8.Threejs.xrScene())
 
       initScene()
-      drawing = createDrawing(scene)
+      drawing = createDrawing(contentRoot)
       wireControls()
       wireDepthSlider()
       wireTouchDrawing()
@@ -244,6 +319,9 @@ const ardrawPipelineModule = () => {
 
       window.__ardraw = {
         stats,
+        // Exposed for the harness: jump compensation is a transform on this group, and the only
+        // honest way to test it is to check the maths on it.
+        contentRoot,
         get state() {
           return {
             ...stats,
@@ -272,7 +350,11 @@ const ardrawPipelineModule = () => {
 
       camera.updateMatrixWorld()
       camera.getWorldPosition(cameraWorldPos)
-      if (hasLastCameraPos) {
+
+      // Must run before lastCameraPos is updated: it measures this frame's step.
+      const jumped = hasLastCameraPos ? compensateJumpIfAny() : false
+
+      if (hasLastCameraPos && !jumped) {
         poseJitterMm = poseJitterMm * 0.9 + cameraWorldPos.distanceTo(lastCameraPos) * 1000 * 0.1
       }
       lastCameraPos.copy(cameraWorldPos)
@@ -280,18 +362,33 @@ const ardrawPipelineModule = () => {
 
       updateReticleDot()
 
-      if (touchDrawing) {
+      const degraded = CONFIG.pauseDrawingWhenTrackingDegraded && !trackingIsGood()
+
+      if (touchDrawing && !degraded) {
         // Recomputed every frame: the brush is fixed relative to the camera, so the phone's
         // motion through the room is what lays down the tube.
         drawing.extend(smoothedBrush(performance.now()))
+      } else if (touchDrawing) {
+        // Paused, not ended: points recorded now would be placed against a pose about to be
+        // corrected. The stroke resumes from where it stopped once tracking recovers, and the
+        // filter is reset so it does not interpolate across the gap.
+        stats.pausedFrames += 1
+        filterWorld.x.reset()
+        filterWorld.y.reset()
+        filterWorld.z.reset()
       }
+
+      const warning = trackingMessage()
 
       if (debugVisible) {
         setStatus(
-          `prof ${drawDepth.toFixed(2)}m · slam ${trackingStatus || '?'} ` +
-          `${poseJitterMm.toFixed(1)}mm/f · ${drawing.strokeCount} tubes`,
-          touchDrawing ? 'drawing' : ''
+          `prof ${drawDepth.toFixed(2)}m · slam ${trackingStatus || '?'}/${trackingReason || '?'} ` +
+          `${poseJitterMm.toFixed(1)}mm/f · ${stats.jumpsCompensated} recal · ` +
+          `${drawing.strokeCount} tubes`,
+          warning ? 'error' : touchDrawing ? 'drawing' : ''
         )
+      } else if (warning) {
+        setStatus(warning, 'error')
       } else {
         setStatus(
           touchDrawing ? 'Dessin en cours…' : 'Appui long au centre pour dessiner',
