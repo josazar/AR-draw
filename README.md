@@ -78,11 +78,34 @@ npx cloudflared tunnel --url http://localhost:5173
 Les domaines `*.trycloudflare.com`, `*.ngrok-free.dev` et `*.ngrok.io` sont déjà autorisés dans
 `vite.config.js`.
 
-### Déployer sur GitHub Pages
+### Déployer sur Netlify (recommandé)
 
-Le workflow `.github/workflows/deploy.yml` construit et publie à chaque push. **Il faut l'activer
-une fois** : *Settings → Pages → Source: GitHub Actions*. Pages sert en HTTPS, donc la caméra
-fonctionne directement depuis l'iPhone.
+`netlify.toml` est déjà configuré. Côté Netlify, une seule fois :
+
+1. *Add new site → Import an existing project → GitHub*, choisir ce dépôt.
+2. Ne rien changer : la commande de build (`npm run build`) et le dossier publié (`dist`) sont lus
+   depuis `netlify.toml`.
+3. *Site configuration → Build & deploy → Branches and deploy contexts* : ajouter
+   `claude/arjs-spatial-drawing-xfwzrz` aux **branch deploys**.
+
+Chaque push produit alors une URL de preview, en HTTPS — donc la caméra fonctionne, et on ouvre
+directement l'URL sur l'iPhone.
+
+Ce que `netlify.toml` règle, et qui n'est pas évident :
+
+- `NODE_VERSION = "20"`, parce que Vite 8 ne construit pas avec le Node par défaut de certains
+  comptes.
+- `Permissions-Policy: camera=(self)`.
+- Cache immuable sur le modèle (7,8 Mo) et les WASM, qui ne changent jamais entre deux déploiements.
+- **Pas** de `Cross-Origin-Embedder-Policy`. Ce serait tentant pour donner `SharedArrayBuffer` à
+  MediaPipe, mais COEP bloque toute sous-ressource sans en-tête CORP — dont le moteur 8th Wall sur
+  jsDelivr. L'application ne chargerait plus du tout. `tasks-vision` fonctionne très bien en
+  mono-thread.
+
+### Déployer sur GitHub Pages (alternative)
+
+Le workflow `.github/workflows/deploy.yml` fait la même chose. **À activer une fois** :
+*Settings → Pages → Source: GitHub Actions*. Les deux peuvent coexister sans conflit.
 
 ## Utilisation
 

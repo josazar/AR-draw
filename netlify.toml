@@ -1,0 +1,48 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  # Vite 8 needs a modern Node; Netlify's default is older on some accounts.
+  NODE_VERSION = "20"
+
+# Build deploy previews for pull requests and for every branch, so a push gives a URL that can be
+# opened straight on a phone.
+[context.deploy-preview]
+  command = "npm run build"
+
+[context.branch-deploy]
+  command = "npm run build"
+
+# ------------------------------------------------------------------------------------------------
+# Headers
+# ------------------------------------------------------------------------------------------------
+# Deliberately NOT set: Cross-Origin-Embedder-Policy / Cross-Origin-Opener-Policy. They would give
+# MediaPipe SharedArrayBuffer, but they also block any subresource that does not send CORP -- which
+# includes the 8th Wall engine on jsDelivr. The app would stop loading entirely. tasks-vision runs
+# fine single-threaded.
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    # The camera is the whole point; be explicit that this origin may use it.
+    Permissions-Policy = "camera=(self)"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+# The hand model is ~7.8 MB and content-addressed by the build, so cache it hard.
+[[headers]]
+  for = "/models/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/mediapipe-wasm/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# Vite fingerprints these filenames.
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
