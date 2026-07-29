@@ -341,6 +341,43 @@ unit.forEach(record)
 const pageErrors = await page.evaluate(() => window.__errors)
 record(`${pageErrors.length === 0 ? 'PASS' : 'FAIL'} no uncaught page errors :: ${JSON.stringify(pageErrors)}`)
 
+// --- regression: a missing model must fail, not hang --------------------------------------------
+// Handing MediaPipe a URL it cannot load does not reject -- it logs "Unable to open zip archive"
+// and the promise never settles. That shipped once and stranded the app on its loading message
+// forever, which from the outside is indistinguishable from a slow download. A host that answers
+// a missing file with an HTML 404 page reproduces it exactly.
+{
+  const hostilePage = await browser.newPage({viewport: {width: 390, height: 844}})
+  await hostilePage.route(/(xr\.js|xr-slam\.js|xrextras\.js|landing-page\.js)(\?|$)/, (r) => r.abort())
+  await hostilePage.route(/hand_landmarker\.task/, (route) =>
+    route.fulfill({status: 404, contentType: 'text/html', body: '<html>Not found</html>'})
+  )
+  await hostilePage.addInitScript(stubEngine)
+  await hostilePage.goto(URL_UNDER_TEST, {waitUntil: 'load'})
+  await hostilePage.evaluate(() => {
+    const mod = (window.__mods || []).find((m) => m.name === 'ardraw')
+    mod?.onStart({canvas: document.getElementById('camerafeed')})
+  })
+
+  const settled = await hostilePage
+    .waitForFunction(
+      () => {
+        const t = document.getElementById('status').textContent
+        return t.includes('indisponible') ? t : false
+      },
+      {timeout: 90000}
+    )
+    .then(() => true)
+    .catch(() => false)
+
+  const detail = await hostilePage.evaluate(() => document.getElementById('hint').textContent)
+  record(
+    `${settled ? 'PASS' : 'FAIL'} a missing model reports an error instead of hanging` +
+      (settled ? ` :: ${detail.split('\n')[1] || detail}`.slice(0, 90) : ' :: still loading after 90s')
+  )
+  await hostilePage.close()
+}
+
 await browser.close()
 
 const failed = results.filter((r) => r.startsWith('FAIL'))

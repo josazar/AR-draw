@@ -112,6 +112,9 @@ Le workflow `.github/workflows/deploy.yml` fait la même chose. **À activer une
 
 ## Utilisation
 
+En haut à gauche, un **badge de version** (`v0.4.0`). Le toucher déplie le commit et la date de
+build : c'est ce qui identifie précisément le déploiement qu'on a sous les yeux.
+
 | Bouton | Effet |
 |---|---|
 | **Annuler** | Supprime le dernier tube |
@@ -191,11 +194,11 @@ npm run serve                                            # dans un autre termina
 npm run smoke -- http://127.0.0.1:5173/
 ```
 
-32 assertions : câblage du pipeline, chargement réel de MediaPipe, correspondance image → écran
+33 assertions : câblage du pipeline, chargement réel de MediaPipe, correspondance image → écran
 (dont deux tests qui verrouillent le sens des axes : main à droite → tube à droite, main en haut →
 tube en haut), profondeur métrique retrouvée à 1 % sur des mains synthétiques de tailles
 différentes, comportement du filtre One Euro, invariance d'échelle du pincement, construction et
-cycle de vie des tubes. Le moteur 8th
+cycle de vie des tubes, et une non-régression sur le chargement (voir ci-dessous). Le moteur 8th
 Wall est stubbé (et bloqué au niveau réseau, pour que le résultat ne dépende pas de sa
 disponibilité), donc aucune caméra n'est nécessaire.
 
@@ -245,6 +248,20 @@ Un vrai iPhone reste nécessaire pour : la **qualité du SLAM** (une vidéo synt
 parallaxe, la caméra ne bouge donc pas dans la scène), la **fluidité réelle** (le WebGL logiciel en
 headless met plus d'une seconde par inférence, totalement non représentatif) et l'**ergonomie du
 geste**.
+
+### Le piège du modèle manquant
+
+Passer à MediaPipe une URL qu'il ne peut pas charger **ne rejette pas** : il journalise
+`Unable to open zip archive` en interne et la promesse ne se résout jamais. L'application restait
+alors bloquée pour toujours sur son message de chargement — indiscernable, vu de l'extérieur, d'un
+téléchargement lent. Un hébergeur qui répond à un fichier absent par sa page HTML 404 reproduit le
+cas exactement.
+
+Le modèle est donc récupéré par l'application elle-même (`modelAssetBuffer`) et non par une URL
+confiée à MediaPipe. Bénéfices : le HTTP 404 et la page HTML sont détectés explicitement, la
+progression du téléchargement est affichée, et tout appel à la bibliothèque est borné par un
+délai. En cas d'échec, l'erreur exacte s'affiche **à l'écran** — un téléphone n'a pas de console.
+Un test verrouille ce comportement.
 
 ## Limites connues
 

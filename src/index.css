@@ -41,6 +41,31 @@ body {
   display: block;
 }
 
+/* Top-left, deliberately quiet: present enough to read at a glance, not competing with the AR. */
+#version {
+  position: absolute;
+  top: max(12px, env(safe-area-inset-top));
+  left: max(10px, env(safe-area-inset-left));
+  z-index: 20;
+  appearance: none;
+  border: none;
+  border-radius: 8px;
+  padding: 5px 9px;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: rgba(255, 255, 255, 0.75);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  line-height: 1.35;
+  text-align: left;
+  white-space: pre-line;
+}
+
+#version:active {
+  color: #fff;
+}
+
 #hud {
   position: absolute;
   top: max(12px, env(safe-area-inset-top));
@@ -52,6 +77,8 @@ body {
   gap: 8px;
   pointer-events: none;
   z-index: 10;
+  /* Keep the centred pills clear of the version badge in the corner. */
+  padding: 0 76px;
 }
 
 .pill {

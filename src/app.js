@@ -15,7 +15,15 @@ import {createDrawing} from './tube-drawing'
 // XRExtras expects to find three.js on the window.
 window.THREE = THREE
 
+// Injected by vite at build time; see vite.config.js.
+const BUILD = {
+  version: typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev',
+  commit: typeof __BUILD_COMMIT__ === 'string' ? __BUILD_COMMIT__ : 'local',
+  time: typeof __BUILD_TIME__ === 'string' ? __BUILD_TIME__ : '',
+}
+
 const ui = {
+  version: document.getElementById('version'),
   status: document.getElementById('status'),
   hint: document.getElementById('hint'),
   overlay: document.getElementById('debugoverlay'),
@@ -31,6 +39,23 @@ const setStatus = (text, kind = '') => {
   ui.status.className = `pill ${kind}`
 }
 
+// Collapsed by default so it stays out of the way; tapping reveals the commit and build time,
+// which is what actually identifies a deploy.
+const wireVersionBadge = () => {
+  let expanded = false
+  const render = () => {
+    ui.version.textContent = expanded
+      ? `v${BUILD.version}\n${BUILD.commit}\n${BUILD.time}`
+      : `v${BUILD.version}`
+  }
+  ui.version.addEventListener('click', () => {
+    expanded = !expanded
+    render()
+  })
+  render()
+}
+wireVersionBadge()
+
 const ardrawPipelineModule = () => {
   let scene
   let camera
@@ -40,6 +65,7 @@ const ardrawPipelineModule = () => {
 
   let autoDepth = true
   let debugVisible = false
+  let modelSource = null
 
   // Latest detection ({landmarks, worldLandmarks}), reused on frames where detection is skipped.
   let detection = null
@@ -217,6 +243,7 @@ const ardrawPipelineModule = () => {
             depth: smoothedDepth,
             pinchRatio: lastPinchRatio,
             strokes: drawing.strokeCount,
+            modelSource,
             viewport: cameraViewport,
             cameraPosition: camera.position.toArray().map((n) => Number(n.toFixed(4))),
           }
@@ -224,15 +251,31 @@ const ardrawPipelineModule = () => {
       }
 
       setStatus('Chargement du suivi de main…')
-      createHandTracker()
+
+      // Report progress: the model is ~7.8 MB, so on mobile data this stage is long enough that
+      // silence is indistinguishable from a hang.
+      const onProgress = ({stage, received, total}) => {
+        if (stage === 'wasm') setStatus('Chargement du moteur de vision…')
+        else if (stage === 'init') setStatus('Initialisation du suivi…')
+        else if (stage === 'model') {
+          const mb = (received / 1e6).toFixed(1)
+          setStatus(total
+            ? `Téléchargement du modèle ${mb}/${(total / 1e6).toFixed(1)} Mo`
+            : `Téléchargement du modèle ${mb} Mo`)
+        }
+      }
+
+      createHandTracker(onProgress)
         .then((created) => {
           tracker = created
+          modelSource = created.modelUsed
           setStatus('Montrez votre main')
           console.log(`[ardraw] MediaPipe delegate=${created.delegateUsed} model=${created.modelUsed}`)
         })
         .catch((error) => {
           console.error('[ardraw] hand tracker failed to load', error)
           setStatus('Suivi de main indisponible', 'error')
+          // On screen, not just in the console: a phone has no console.
           ui.hint.textContent = String(error?.message || error)
         })
     },

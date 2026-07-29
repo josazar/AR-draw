@@ -104,46 +104,130 @@ export const estimateDepthMeters = (screenPoints, worldLandmarks, widthOverHeigh
 // Tracker
 // ------------------------------------------------------------------------------------------
 
-export const createHandTracker = async () => {
-  const fileset = await FilesetResolver.forVisionTasks(`${import.meta.env.BASE_URL}mediapipe-wasm`)
+// Handing MediaPipe a URL it cannot load does NOT reject: it logs "Unable to open zip archive"
+// internally and the promise never settles, so the app hangs on its loading message forever.
+// That is worth guarding against wherever we await the library.
+const withTimeout = (promise, ms, label) => {
+  let timer
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label}: pas de reponse apres ${ms / 1000}s`)), ms)
+    }),
+  ])
+}
 
-  const build = (modelAssetPath, delegate) => HandLandmarker.createFromOptions(fileset, {
-    baseOptions: {modelAssetPath, delegate},
-    runningMode: 'VIDEO',
-    numHands: 1,
-    minHandDetectionConfidence: 0.5,
-    minHandPresenceConfidence: 0.5,
-    minTrackingConfidence: 0.5,
-  })
+// Fetching the model ourselves, rather than passing a URL, is what makes a missing or broken
+// model a clear error instead of a hang -- and it lets us report download progress, which matters
+// because the file is ~7.8 MB over mobile data.
+const fetchModel = async (url, onProgress) => {
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
 
-  // Prefer the self-hosted model, and the GPU delegate, but neither is guaranteed: the build-time
-  // download can fail, and the GPU delegate is not available on every iOS build. Walk the
-  // combinations rather than dying on the first problem.
-  const candidates = [
-    [`${import.meta.env.BASE_URL}${CONFIG.handModelPathLocal}`, 'GPU'],
-    [`${import.meta.env.BASE_URL}${CONFIG.handModelPathLocal}`, 'CPU'],
-    [CONFIG.handModelUrlRemote, 'GPU'],
-    [CONFIG.handModelUrlRemote, 'CPU'],
+  // A misconfigured host answers a missing file with its HTML 404 page, which MediaPipe would
+  // then try to open as a zip archive and hang on.
+  const contentType = response.headers.get('content-type') || ''
+  if (contentType.includes('text/html')) {
+    throw new Error('page HTML recue au lieu du modele (404 ?)')
+  }
+
+  const total = Number(response.headers.get('content-length')) || 0
+  const reader = response.body.getReader()
+  const chunks = []
+  let received = 0
+
+  for (;;) {
+    const {done, value} = await reader.read()
+    if (done) break
+    chunks.push(value)
+    received += value.length
+    onProgress?.(received, total)
+  }
+
+  const buffer = new Uint8Array(received)
+  let offset = 0
+  for (const chunk of chunks) {
+    buffer.set(chunk, offset)
+    offset += chunk.length
+  }
+
+  if (buffer.byteLength < 1_000_000) {
+    throw new Error(`fichier trop petit (${buffer.byteLength} octets)`)
+  }
+  return buffer
+}
+
+// onProgress: ({stage, received, total}) => void, for the loading UI.
+export const createHandTracker = async (onProgress) => {
+  const report = (stage, received = 0, total = 0) => onProgress?.({stage, received, total})
+
+  report('wasm')
+  const fileset = await withTimeout(
+    FilesetResolver.forVisionTasks(`${import.meta.env.BASE_URL}mediapipe-wasm`),
+    30000,
+    'runtime WASM'
+  )
+
+  // Prefer the self-hosted copy; fall back to Google's if the build-time download did not happen.
+  const modelUrls = [
+    `${import.meta.env.BASE_URL}${CONFIG.handModelPathLocal}`,
+    CONFIG.handModelUrlRemote,
   ]
 
-  let landmarker = null
-  let delegateUsed = null
-  let modelUsed = null
   const failures = []
+  let modelBuffer = null
+  let modelUsed = null
 
-  for (const [modelAssetPath, delegate] of candidates) {
+  for (const url of modelUrls) {
     try {
-      landmarker = await build(modelAssetPath, delegate)
-      delegateUsed = delegate
-      modelUsed = modelAssetPath
+      report('model')
+      modelBuffer = await withTimeout(
+        fetchModel(url, (received, total) => report('model', received, total)),
+        60000,
+        `telechargement du modele (${url})`
+      )
+      modelUsed = url
       break
     } catch (error) {
-      failures.push(`${delegate} ${modelAssetPath}: ${error?.message || error}`)
+      failures.push(`modele ${url}: ${error?.message || error}`)
+    }
+  }
+
+  if (!modelBuffer) {
+    throw new Error(`Modele de main introuvable.\n${failures.join('\n')}`)
+  }
+
+  report('init')
+
+  // The GPU delegate is much faster but is not available on every iOS build.
+  let landmarker = null
+  let delegateUsed = null
+
+  for (const delegate of ['GPU', 'CPU']) {
+    try {
+      landmarker = await withTimeout(
+        HandLandmarker.createFromOptions(fileset, {
+          // A fresh copy per attempt: MediaPipe may consume the buffer, leaving nothing for the
+          // fallback.
+          baseOptions: {modelAssetBuffer: modelBuffer.slice(), delegate},
+          runningMode: 'VIDEO',
+          numHands: 1,
+          minHandDetectionConfidence: 0.5,
+          minHandPresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        }),
+        30000,
+        `initialisation ${delegate}`
+      )
+      delegateUsed = delegate
+      break
+    } catch (error) {
+      failures.push(`${delegate}: ${error?.message || error}`)
     }
   }
 
   if (!landmarker) {
-    throw new Error(`Impossible de charger le modele de main.\n${failures.join('\n')}`)
+    throw new Error(`Initialisation du suivi de main impossible.\n${failures.join('\n')}`)
   }
   if (failures.length) {
     console.warn(`[hands] fell back after ${failures.length} failed attempt(s):\n${failures.join('\n')}`)

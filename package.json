@@ -1,6 +1,7 @@
 {
   "name": "ar-draw",
   "private": true,
+  "version": "0.4.0",
   "type": "module",
   "scripts": {
     "copy-wasm": "node scripts/copy-mediapipe-wasm.js",
