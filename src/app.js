@@ -8,15 +8,7 @@
 
 import * as THREE from 'three'
 import {CONFIG, HAND_CONNECTIONS} from './config'
-import {
-  CALIBRATION_STATES,
-  createHandTracker,
-  imageToScreen,
-  knuckleSpan,
-  loadCalibration,
-  pinchRatio,
-  saveCalibration,
-} from './hand-tracking'
+import {createHandTracker, imageToScreen, knuckleSpan, pinchRatio} from './hand-tracking'
 import {createDrawing} from './tube-drawing'
 
 // XRExtras expects to find three.js on the window.
@@ -30,7 +22,6 @@ const ui = {
   clear: document.getElementById('btn-clear'),
   color: document.getElementById('btn-color'),
   depth: document.getElementById('btn-depth'),
-  calib: document.getElementById('btn-calib'),
   debug: document.getElementById('btn-debug'),
 }
 
@@ -39,24 +30,27 @@ const setStatus = (text, kind = '') => {
   ui.status.className = `pill ${kind}`
 }
 
-const screenAngle = () => {
-  const angle = window.screen?.orientation?.angle
-  return Number.isFinite(angle) ? angle : (window.orientation || 0)
-}
-
 const ardrawPipelineModule = () => {
   let scene
   let camera
+  let arCanvas
   let drawing
   let tracker = null
 
-  let calibration = loadCalibration(screenAngle())
   let autoDepth = true
   let debugVisible = false
 
   // Latest detection, reused on frames where detection is skipped.
   let landmarks = null
+  // Where the engine last drew the camera image, in canvas pixels. Needed to map a landmark to a
+  // screen position; see imageToScreen.
+  let cameraViewport = null
   let frameCounter = 0
+
+  // Rolling average of inference time, driving the automatic detection stride.
+  let detectMsEma = 0
+  let detectStride = 1
+  let detectCount = 0
 
   // Smoothed state.
   let smoothedDepth = CONFIG.depthFixed
@@ -78,9 +72,9 @@ const ardrawPipelineModule = () => {
   const stats = {frames: 0, framesWithHand: 0, pinchEvents: 0}
 
   const initScene = () => {
-    // MeshStandardMaterial needs light to be visible at all.
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x404060, 1.6))
-    const key = new THREE.DirectionalLight(0xffffff, 1.1)
+    // MeshLambertMaterial needs light to be visible at all.
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x404060, 2.0))
+    const key = new THREE.DirectionalLight(0xffffff, 1.0)
     key.position.set(2, 4, 3)
     scene.add(key)
 
@@ -126,6 +120,14 @@ const ardrawPipelineModule = () => {
       overlayCtx.arc(x, y, 3, 0, Math.PI * 2)
       overlayCtx.fill()
     }
+
+    // Ring on the fingertip that is actually drawing, so it is obvious which point is tracked.
+    const [tx, ty] = toPx(points[8])
+    overlayCtx.strokeStyle = '#ffd60a'
+    overlayCtx.lineWidth = 3
+    overlayCtx.beginPath()
+    overlayCtx.arc(tx, ty, 12, 0, Math.PI * 2)
+    overlayCtx.stroke()
   }
 
   const wireControls = () => {
@@ -143,13 +145,6 @@ const ardrawPipelineModule = () => {
       ui.depth.classList.toggle('on', !autoDepth)
     })
 
-    ui.calib.addEventListener('click', () => {
-      calibration = (calibration + 1) % CALIBRATION_STATES
-      saveCalibration(calibration)
-      ui.hint.textContent = `Calibrage ${calibration + 1}/${CALIBRATION_STATES} — le squelette doit suivre votre main`
-      if (!debugVisible) ui.debug.click()
-    })
-
     ui.debug.addEventListener('click', () => {
       debugVisible = !debugVisible
       ui.overlay.classList.toggle('visible', debugVisible)
@@ -161,8 +156,8 @@ const ardrawPipelineModule = () => {
     resizeOverlay()
   }
 
-  // Converts the raw landmark list into screen-space points using the current calibration.
-  const toScreenPoints = (raw) => raw.map(({x, y}) => imageToScreen(x, y, calibration))
+  const toScreenPoints = (raw) =>
+    raw.map(({x, y}) => imageToScreen(x, y, cameraViewport, arCanvas.width, arCanvas.height))
 
   const updatePinchState = (ratio) => {
     const wantsPinch = pinchHeld
@@ -187,6 +182,7 @@ const ardrawPipelineModule = () => {
     name: 'ardraw',
 
     onStart: ({canvas}) => {
+      arCanvas = canvas
       ;({scene, camera} = XR8.Threejs.xrScene())
 
       initScene()
@@ -206,17 +202,15 @@ const ardrawPipelineModule = () => {
           return {
             ...stats,
             pinchHeld,
-            calibration,
             autoDepth,
+            detectStride,
+            detectMs: Number(detectMsEma.toFixed(1)),
             depth: smoothedDepth,
             pinchRatio: lastPinchRatio,
             strokes: drawing.strokeCount,
+            viewport: cameraViewport,
             cameraPosition: camera.position.toArray().map((n) => Number(n.toFixed(4))),
           }
-        },
-        setCalibration: (index) => {
-          calibration = index % CALIBRATION_STATES
-          saveCalibration(calibration)
         },
       }
 
@@ -225,7 +219,6 @@ const ardrawPipelineModule = () => {
         .then((created) => {
           tracker = created
           setStatus('Montrez votre main')
-          ui.hint.textContent = 'Pincez pouce + index pour dessiner'
           console.log(`[ardraw] MediaPipe delegate=${created.delegateUsed} model=${created.modelUsed}`)
         })
         .catch((error) => {
@@ -236,21 +229,45 @@ const ardrawPipelineModule = () => {
     },
 
     // The pixel array is published on processGpuResult, not processCpuResult -- the module reads
-    // it back off the GPU during the GPU phase.
+    // it back off the GPU during the GPU phase. The camera viewport arrives the same way.
     onUpdate: ({processGpuResult}) => {
       if (!tracker) return
 
-      // Empty on the first frame or two, before the render target is sized.
+      // Where the engine drew the camera this frame. Empty on the first frame or two.
+      const viewport = processGpuResult?.gltexturerenderer?.viewport
+      if (viewport?.width) cameraViewport = viewport
+
       const frame = processGpuResult?.camerapixelarray
       if (frame?.pixels) {
         frameCounter += 1
         stats.frames += 1
-        if (frameCounter % CONFIG.detectEveryNFrames === 0) {
+
+        // Adapt how often inference runs to what the device can actually sustain, unless the
+        // stride has been pinned in config.
+        if (CONFIG.detectEveryNFrames > 0) {
+          detectStride = CONFIG.detectEveryNFrames
+        } else if (detectMsEma > CONFIG.detectBudgetHighMs) {
+          detectStride = 3
+        } else if (detectMsEma > CONFIG.detectBudgetMs) {
+          detectStride = 2
+        } else {
+          detectStride = 1
+        }
+
+        if (frameCounter % detectStride === 0) {
+          const started = performance.now()
           try {
-            landmarks = tracker.detect(frame, performance.now())
+            landmarks = tracker.detect(frame, started)
           } catch (error) {
             console.warn('[ardraw] detection failed', error)
           }
+          // The first inference pays for graph warm-up and is several orders of magnitude slower
+          // than steady state; letting it seed the average would pin the stride at its slowest
+          // for the next few seconds.
+          const elapsed = performance.now() - started
+          detectCount += 1
+          if (detectCount === 2) detectMsEma = elapsed
+          else if (detectCount > 2) detectMsEma = detectMsEma * 0.9 + elapsed * 0.1
         }
       }
 
@@ -261,9 +278,9 @@ const ardrawPipelineModule = () => {
           pinchCandidate = false
           pinchStreak = 0
           drawing.end()
-          setStatus('Main perdue — tube ferme')
-        } else if (!drawing.isDrawing) {
-          setStatus('Montrez votre main')
+          setStatus('Main perdue — tube fermé')
+        } else {
+          setStatus('Aucune main détectée')
         }
         hasSmoothedTip = false
         if (debugVisible) drawDebugOverlay(null)
@@ -313,11 +330,14 @@ const ardrawPipelineModule = () => {
         drawDebugOverlay(screenPoints)
         setStatus(
           `pinch ${lastPinchRatio.toFixed(2)} · prof ${smoothedDepth.toFixed(2)}m · ` +
-          `calib ${calibration + 1}/${CALIBRATION_STATES} · ${drawing.strokeCount} tubes`,
+          `${detectMsEma.toFixed(0)}ms /${detectStride} · ${drawing.strokeCount} tubes`,
           pinchHeld ? 'drawing' : ''
         )
       } else {
-        setStatus(pinchHeld ? 'Dessin en cours…' : 'Pincez pour dessiner', pinchHeld ? 'drawing' : '')
+        setStatus(
+          pinchHeld ? 'Dessin en cours…' : 'Main détectée — pincez pour dessiner',
+          pinchHeld ? 'drawing' : ''
+        )
       }
     },
   }

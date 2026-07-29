@@ -11,7 +11,10 @@ export const createDrawing = (scene) => {
   let current = null
   let colorIndex = 0
 
-  const capGeometry = new THREE.SphereGeometry(CONFIG.tubeRadius, CONFIG.tubeRadialSegments, 8)
+  const capGeometry = new THREE.SphereGeometry(CONFIG.tubeRadius, CONFIG.tubeRadialSegments, 6)
+
+  // Timestamp of the last geometry rebuild, for throttling.
+  let lastRebuild = 0
 
   const rebuild = (stroke) => {
     const {points} = stroke
@@ -57,11 +60,9 @@ export const createDrawing = (scene) => {
     },
 
     begin(position) {
-      const material = new THREE.MeshStandardMaterial({
-        color: CONFIG.palette[colorIndex],
-        roughness: 0.35,
-        metalness: 0.05,
-      })
+      // Lambert rather than Standard: PBR shading is wasted on a plain coloured tube and costs
+      // real fill rate on a phone that is already running SLAM and a neural net.
+      const material = new THREE.MeshLambertMaterial({color: CONFIG.palette[colorIndex]})
       const group = new THREE.Group()
       const startCap = new THREE.Mesh(capGeometry, material)
       const endCap = new THREE.Mesh(capGeometry, material)
@@ -94,7 +95,14 @@ export const createDrawing = (scene) => {
       }
 
       points.push(position.clone())
-      rebuild(current)
+
+      // Always move the trailing cap, but only rebuild the tube on a timer.
+      current.endCap.position.copy(position)
+      const now = performance.now()
+      if (now - lastRebuild >= CONFIG.rebuildIntervalMs) {
+        rebuild(current)
+        lastRebuild = now
+      }
       return true
     },
 
@@ -107,6 +115,7 @@ export const createDrawing = (scene) => {
         scene.remove(current.group)
         current.material.dispose()
       } else {
+        // Also catches up on any points added since the last throttled rebuild.
         rebuild(current)
         strokes.push(current)
       }

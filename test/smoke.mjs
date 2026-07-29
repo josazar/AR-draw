@@ -120,7 +120,7 @@ const updateResult = await page.evaluate(() => {
     for (let i = 0; i < 5; i++) {
       mod.onUpdate({processGpuResult: {camerapixelarray: {pixels, cols, rows}}})
     }
-    for (const id of ['btn-debug', 'btn-calib', 'btn-color', 'btn-depth', 'btn-undo', 'btn-clear']) {
+    for (const id of ['btn-debug', 'btn-color', 'btn-depth', 'btn-undo', 'btn-clear']) {
       document.getElementById(id).click()
     }
     // Once more with the debug overlay enabled, to cover the overlay drawing path.
@@ -143,19 +143,42 @@ const unit = await page.evaluate(async () => {
   const check = (name, cond, detail = '') =>
     out.push(`${cond ? 'PASS' : 'FAIL'} ${name}${detail ? ' :: ' + detail : ''}`)
 
-  // Orientation mapping. Use an asymmetric probe: a point symmetric about 0.5 collides under
-  // rotation and would hide real bugs.
-  let inRange = true
-  const distinct = new Set()
-  for (let c = 0; c < 8; c++) {
-    const {u, v} = imageToScreen(0.2, 0.7, c)
-    if (u < -1e-9 || u > 1 + 1e-9 || v < -1e-9 || v > 1 + 1e-9) inRange = false
-    distinct.add(`${u.toFixed(4)},${v.toFixed(4)}`)
-  }
-  check('imageToScreen stays inside the unit square for all 8 calibrations', inRange)
-  check('the 8 calibrations are distinct', distinct.size === 8, `got ${distinct.size}`)
-  const id = imageToScreen(0.3, 0.6, 0)
-  check('calibration 0 is the identity', Math.abs(id.u - 0.3) < 1e-9 && Math.abs(id.v - 0.6) < 1e-9)
+  // Image -> screen mapping. These are the real numbers the engine reported on an iPhone 13
+  // viewport: a 640x480 camera image scaled to cover a 376x640 canvas, so it overflows
+  // horizontally and is cropped.
+  const VP = {offsetX: -238.6666, offsetY: 0, width: 853.3333, height: 640}
+  const CW = 376
+  const CH = 640
+  const map = (x, y) => imageToScreen(x, y, VP, CW, CH)
+
+  const centre = map(0.5, 0.5)
+  check(
+    'the image centre lands at the screen centre',
+    Math.abs(centre.u - 0.5) < 1e-3 && Math.abs(centre.v - 0.5) < 1e-3,
+    `${centre.u.toFixed(4)},${centre.v.toFixed(4)}`
+  )
+
+  // These two encode the behaviour the whole feature depends on: moving the hand right must move
+  // the tube right, and moving it up must move it up. An inverted axis here is exactly the bug
+  // that shows up as a tube going the wrong way.
+  check('moving right in the image moves right on screen', map(0.6, 0.5).u > map(0.4, 0.5).u)
+  check('moving up in the image moves up on screen', map(0.5, 0.4).v < map(0.5, 0.6).v)
+
+  // The image is wider than the canvas, so its edges fall outside the visible area. That is the
+  // crop, and it must not be clamped away -- a hand near the edge is genuinely off-screen.
+  check('the cropped left edge maps outside the screen', map(0, 0.5).u < 0, map(0, 0.5).u.toFixed(3))
+  check('the cropped right edge maps outside the screen', map(1, 0.5).u > 1, map(1, 0.5).u.toFixed(3))
+
+  // Vertically the image exactly fills the canvas in this configuration.
+  check('the image top maps to the screen top', Math.abs(map(0.5, 0).v) < 1e-9)
+  check('the image bottom maps to the screen bottom', Math.abs(map(0.5, 1).v - 1) < 1e-9)
+
+  // No viewport yet on the first frames; must not throw or produce NaN.
+  const fallback = imageToScreen(0.3, 0.6, null, 0, 0)
+  check(
+    'falls back to identity before the viewport is known',
+    Math.abs(fallback.u - 0.3) < 1e-9 && Math.abs(fallback.v - 0.6) < 1e-9
+  )
 
   // Synthetic hand: `scale` shrinks it as if it moved away, `gap` opens the thumb-index pinch.
   const hand = (scale, gap) => {

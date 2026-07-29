@@ -3,12 +3,19 @@
 
 export const CONFIG = {
   // --- Hand detection -------------------------------------------------------------------------
-  // Downscaled camera frame fed to MediaPipe. 320px is a good speed/accuracy trade-off on an
-  // iPhone; raising it costs frame rate fast.
-  cameraMaxDimension: 320,
+  // Downscaled camera frame fed to MediaPipe. The detector rescales to 192x192 internally, so
+  // going much above this buys accuracy only for small/distant hands, while every extra pixel is
+  // paid twice: once in the engine's readPixels off the GPU, once in inference.
+  cameraMaxDimension: 256,
 
-  // Run detection on 1 frame out of N. 1 = every frame. Raise to 2 if the frame rate suffers.
-  detectEveryNFrames: 1,
+  // Run detection on 1 frame out of N. 0 = adapt automatically from measured inference time,
+  // which is the sane default across a fast iPhone and a slow one. Set 1/2/3 to pin it.
+  detectEveryNFrames: 0,
+
+  // Inference-time targets for the automatic stride, in milliseconds. Above the first, detection
+  // drops to every other frame; above the second, every third.
+  detectBudgetMs: 12,
+  detectBudgetHighMs: 24,
 
   // ~7 MB. scripts/copy-mediapipe-wasm.js downloads it into public/models at build time so it is
   // served from our own origin; the Google URL is only a fallback for when that download failed.
@@ -52,9 +59,15 @@ export const CONFIG = {
   maxPointsPerStroke: 400,
 
   tubeRadius: 0.012,
-  tubeRadialSegments: 8,
+  // 6 sides is indistinguishable from 8 at this radius on a phone screen, and costs 25% less.
+  tubeRadialSegments: 6,
   // Tube length subdivisions per recorded point.
-  tubeSegmentsPerPoint: 3,
+  tubeSegmentsPerPoint: 2,
+
+  // The whole tube mesh is rebuilt whenever a point is added, which is the single most expensive
+  // thing the app does while drawing. Throttling to ~16 rebuilds a second is imperceptible, and
+  // the trailing cap still follows the fingertip every frame so the tip never looks frozen.
+  rebuildIntervalMs: 60,
 
   palette: [0xff3b30, 0x34c759, 0x0a84ff, 0xffd60a, 0xff2d95, 0xffffff],
 }

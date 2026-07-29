@@ -115,21 +115,24 @@ Le workflow `.github/workflows/deploy.yml` fait la même chose. **À activer une
 | **Effacer** | Vide la scène |
 | **Couleur** | Couleur du prochain tube |
 | **Prof. auto / fixe** | Profondeur estimée depuis la taille de la main, ou figée à 45 cm |
-| **Calibrer** | Corrige l'alignement main/écran (voir ci-dessous) |
 | **Debug** | Affiche le squelette détecté et les valeurs en direct |
 
-### Calibrer — à faire au premier lancement
+### Il n'y a pas de calibrage
 
-L'image de la caméra n'a pas la même orientation que l'écran, et la combinaison exacte (rotation
-+ retournement vertical) dépend du téléphone. Je n'ai pas pu la déterminer depuis un conteneur
-sans iPhone, donc elle est réglable :
+Une version précédente demandait de faire défiler 8 orientations à la main. C'était inutile : le
+moteur publie déjà, à chaque frame, le rectangle exact dans lequel il a dessiné la caméra —
+`processGpuResult.gltexturerenderer.viewport`, en pixels canvas. L'image est mise à l'échelle pour
+couvrir le canvas puis rognée, **jamais pivotée**, et `CameraPixelArray` renvoie cette même image à
+l'endroit. La correspondance image → écran est donc une simple homothétie, et elle est juste sur
+n'importe quel appareil puisque c'est le moteur lui-même qui fournit le nombre.
 
-1. Appuyer sur **Debug** — le squelette de la main s'affiche.
-2. Si le squelette ne se superpose pas à votre vraie main, appuyer sur **Calibrer** pour passer à
-   l'orientation suivante (8 au total).
-3. Dès que le squelette suit la main, c'est bon. **Le réglage est mémorisé** (`localStorage`).
+Vérifié avec une mire : un bloc clair placé en haut à gauche de la source ressort en haut à gauche
+du tableau de pixels, et s'affiche en haut à gauche du canvas, à la position exacte que prédit la
+formule.
 
-Tant que la calibration est fausse, les tubes apparaîtront au mauvais endroit.
+Pour contrôler que le suivi fonctionne : **Debug** superpose le squelette détecté, avec un cercle
+jaune sur le bout de l'index — le point qui dessine réellement. S'il suit votre doigt, tout est
+bon.
 
 ## Réglages
 
@@ -141,8 +144,23 @@ Tout est dans [`src/config.js`](src/config.js) :
 - `positionSmoothing` — lissage du doigt ; MediaPipe est bruité, sans ça le tube ressemble à du
   fil barbelé
 - `tubeRadius`, `palette` — apparence
-- `cameraMaxDimension`, `detectEveryNFrames` — performance ; passer `detectEveryNFrames` à `2` si
-  ça rame
+
+### Performance
+
+Ce que fait l'application par frame : SLAM, un réseau de neurones, et une reconstruction de
+géométrie. Les leviers, par ordre d'impact :
+
+- `detectEveryNFrames` — à `0` (défaut), la cadence d'inférence **s'adapte toute seule** au temps
+  mesuré : 1 frame sur 1 si l'inférence tient sous `detectBudgetMs`, sinon 1 sur 2, puis 1 sur 3.
+  Mettre `1`/`2`/`3` pour la figer.
+- `rebuildIntervalMs` — la reconstruction du tube est l'opération la plus coûteuse pendant le
+  dessin. Elle est limitée à ~16 fois par seconde ; le bouchon de tête, lui, suit le doigt à chaque
+  frame, donc la pointe ne paraît jamais figée.
+- `cameraMaxDimension` — 256. Le détecteur redimensionne à 192×192 en interne, donc monter plus
+  haut ne sert qu'aux mains lointaines, et chaque pixel se paie deux fois : à la relecture GPU puis
+  à l'inférence.
+- `tubeRadialSegments` (6) et `tubeSegmentsPerPoint` (2). Les tubes utilisent `MeshLambertMaterial`
+  et non `MeshStandardMaterial` : le PBR ne se voit pas sur un tube uni et coûte du fill rate.
 
 ## Tests
 
@@ -156,8 +174,9 @@ npm run serve                                            # dans un autre termina
 npm run smoke -- http://127.0.0.1:5173/
 ```
 
-20 assertions : câblage du pipeline, chargement réel de MediaPipe, invariance d'échelle du
-pincement, bijectivité des 8 calibrations, construction et cycle de vie des tubes. Le moteur 8th
+25 assertions : câblage du pipeline, chargement réel de MediaPipe, correspondance image → écran
+(dont deux tests qui verrouillent le sens des axes : main à droite → tube à droite, main en haut →
+tube en haut), invariance d'échelle du pincement, construction et cycle de vie des tubes. Le moteur 8th
 Wall est stubbé (et bloqué au niveau réseau, pour que le résultat ne dépende pas de sa
 disponibilité), donc aucune caméra n'est nécessaire.
 
@@ -204,14 +223,14 @@ npm run live -- http://127.0.0.1:5173/ /tmp/main.y4m live.png
 ### Ce que rien de tout ça ne remplace
 
 Un vrai iPhone reste nécessaire pour : la **qualité du SLAM** (une vidéo synthétique n'a pas de
-parallaxe, la caméra ne bouge donc pas dans la scène), le **bon état de calibration**, la
-**fluidité réelle** (le WebGL logiciel en headless tourne à ~2 fps, non représentatif) et
-l'**ergonomie du geste**.
+parallaxe, la caméra ne bouge donc pas dans la scène), la **fluidité réelle** (le WebGL logiciel en
+headless met plus d'une seconde par inférence, totalement non représentatif) et l'**ergonomie du
+geste**.
 
 ## Limites connues
 
-- **Non testé sur appareil.** Développé et testé en conteneur sans caméra ; la calibration est
-  quasi certainement à ajuster au premier lancement.
+- **Le suivi de main n'a jamais vu une vraie main ici.** Les mires synthétiques valident la
+  géométrie et le pipeline, pas la détection elle-même.
 - **Pas de persistance.** Les dessins vivent en mémoire et disparaissent au rechargement. Les
   ancrer sur un lieu et les retrouver plus tard demanderait un VPS — Niantic Lightship n'est
   justement **pas** inclus dans le binaire libre.

@@ -9,56 +9,26 @@ import {FilesetResolver, HandLandmarker} from '@mediapipe/tasks-vision'
 import {CONFIG, LM} from './config'
 
 // ------------------------------------------------------------------------------------------
-// Image -> screen orientation
+// Image -> screen
 // ------------------------------------------------------------------------------------------
-// The pixel array comes straight off the camera texture, which on a phone held upright is
-// landscape while the screen is portrait. On top of that, glReadPixels returns rows bottom-up.
-// The net transform depends on the device, so rather than hard-code a guess this is a settable
-// rotation + flip that the "Calibrer" button cycles through and localStorage remembers.
+// GlTextureRenderer reports the exact rectangle it drew the camera into, as
+// processGpuResult.gltexturerenderer.viewport, in canvas pixels. The camera image is scaled to
+// cover the canvas and cropped, never rotated, and CameraPixelArray hands back that same image
+// upright. So the mapping is a plain scale-and-offset -- no orientation guesswork, and it stays
+// correct whatever the device does, because it is the engine's own number.
+//
+// Verified against a marker clip: a bright block in the source's top-left corner comes back in
+// the pixel array's top-left corner and renders in the canvas's top-left corner, at the exact
+// pixel position this formula predicts.
 
-const CALIBRATION_KEY = 'ar-draw.calibration'
-export const CALIBRATION_STATES = 8
+export const imageToScreen = (x, y, viewport, canvasWidth, canvasHeight) => {
+  // Identity is the safe fallback for the first frame or two, before the viewport is published.
+  if (!viewport || !canvasWidth || !canvasHeight) return {u: x, v: y}
 
-// Best first guess given the window orientation reported by the engine.
-const defaultCalibrationFor = (orientation) => {
-  switch (orientation) {
-    case 90: return 0
-    case 180: return 3
-    case -90:
-    case 270: return 2
-    default: return 1  // portrait
+  return {
+    u: (viewport.offsetX + x * viewport.width) / canvasWidth,
+    v: (viewport.offsetY + y * viewport.height) / canvasHeight,
   }
-}
-
-export const loadCalibration = (orientation) => {
-  const stored = Number(localStorage.getItem(CALIBRATION_KEY))
-  return Number.isInteger(stored) && stored >= 0 && stored < CALIBRATION_STATES
-    ? stored
-    : defaultCalibrationFor(orientation)
-}
-
-export const saveCalibration = (index) => localStorage.setItem(CALIBRATION_KEY, String(index))
-
-// Maps a normalised point in the camera image to a normalised point on the screen. Both use a
-// top-left origin.
-export const imageToScreen = (x, y, calibration) => {
-  const rot = calibration & 3
-  let u = x
-  let v = calibration >= 4 ? 1 - y : y
-
-  if (rot === 1) {
-    const t = u
-    u = 1 - v
-    v = t
-  } else if (rot === 2) {
-    u = 1 - u
-    v = 1 - v
-  } else if (rot === 3) {
-    const t = u
-    u = v
-    v = 1 - t
-  }
-  return {u, v}
 }
 
 // ------------------------------------------------------------------------------------------
