@@ -15,10 +15,13 @@
       data-preload-chunks="slam" pulls the SLAM chunk up front instead of on first use.
       No account and no app key are required: the hosted 8th Wall platform shut down on
       2026-02-28 and the engine is now distributed freely (binary licence, see README).
+
+      The URLs come from .env, so the engine can also be served from our own origin instead of the
+      CDN. `npm run vendor:engine` sets that up, for offline work and headless testing.
     -->
-    <script src="https://cdn.jsdelivr.net/npm/@8thwall/engine-binary@1/dist/xr.js" async crossorigin="anonymous" data-preload-chunks="slam"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@8thwall/xrextras@1/dist/xrextras.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@8thwall/landing-page@1/dist/landing-page.js" crossorigin="anonymous"></script>
+    <script src="%VITE_XR8_URL%" async crossorigin="anonymous" data-preload-chunks="slam"></script>
+    <script src="%VITE_XREXTRAS_URL%" crossorigin="anonymous"></script>
+    <script src="%VITE_LANDING_PAGE_URL%" crossorigin="anonymous"></script>
 
     <link rel="stylesheet" href="src/index.css">
   </head>

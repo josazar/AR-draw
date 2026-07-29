@@ -73,6 +73,10 @@ const ardrawPipelineModule = () => {
   const rayTarget = new THREE.Vector3()
   const cameraWorldPos = new THREE.Vector3()
 
+  // Counters exposed on window for the headless harness; also handy from Safari's Web Inspector
+  // when debugging on a real phone.
+  const stats = {frames: 0, framesWithHand: 0, pinchEvents: 0}
+
   const initScene = () => {
     // MeshStandardMaterial needs light to be visible at all.
     scene.add(new THREE.HemisphereLight(0xffffff, 0x404060, 1.6))
@@ -196,6 +200,26 @@ const ardrawPipelineModule = () => {
         facing: camera.quaternion,
       })
 
+      window.__ardraw = {
+        stats,
+        get state() {
+          return {
+            ...stats,
+            pinchHeld,
+            calibration,
+            autoDepth,
+            depth: smoothedDepth,
+            pinchRatio: lastPinchRatio,
+            strokes: drawing.strokeCount,
+            cameraPosition: camera.position.toArray().map((n) => Number(n.toFixed(4))),
+          }
+        },
+        setCalibration: (index) => {
+          calibration = index % CALIBRATION_STATES
+          saveCalibration(calibration)
+        },
+      }
+
       setStatus('Chargement du suivi de main…')
       createHandTracker()
         .then((created) => {
@@ -211,12 +235,16 @@ const ardrawPipelineModule = () => {
         })
     },
 
-    onUpdate: ({processCpuResult}) => {
+    // The pixel array is published on processGpuResult, not processCpuResult -- the module reads
+    // it back off the GPU during the GPU phase.
+    onUpdate: ({processGpuResult}) => {
       if (!tracker) return
 
-      const frame = processCpuResult?.camerapixelarray
+      // Empty on the first frame or two, before the render target is sized.
+      const frame = processGpuResult?.camerapixelarray
       if (frame?.pixels) {
         frameCounter += 1
+        stats.frames += 1
         if (frameCounter % CONFIG.detectEveryNFrames === 0) {
           try {
             landmarks = tracker.detect(frame, performance.now())
@@ -242,9 +270,12 @@ const ardrawPipelineModule = () => {
         return
       }
 
+      stats.framesWithHand += 1
+
       const {cols, rows} = frame
       lastPinchRatio = pinchRatio(landmarks, cols, rows)
       const changed = updatePinchState(lastPinchRatio)
+      if (changed && pinchHeld) stats.pinchEvents += 1
 
       // Depth from apparent hand size, so pushing the hand away pushes the tube away too.
       if (autoDepth) {

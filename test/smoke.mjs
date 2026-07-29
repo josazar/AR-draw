@@ -69,6 +69,10 @@ const consoleLines = []
 page.on('console', (m) => consoleLines.push(`[${m.type()}] ${m.text()}`))
 page.on('pageerror', (e) => consoleLines.push(`[pageerror] ${e.message}`))
 
+// Block the real engine so the stub is authoritative. Without this the test result depends on
+// whether the engine is reachable (CDN) or vendored locally, and on a script load race.
+await page.route(/(xr\.js|xr-slam\.js|xrextras\.js|landing-page\.js)(\?|$)/, (route) => route.abort())
+
 await page.addInitScript(stubEngine)
 await page.goto(URL_UNDER_TEST, {waitUntil: 'load'})
 
@@ -114,13 +118,13 @@ const updateResult = await page.evaluate(() => {
   try {
     // No hand in a flat grey frame, so this drives the "hand lost" branch through real inference.
     for (let i = 0; i < 5; i++) {
-      mod.onUpdate({processCpuResult: {camerapixelarray: {pixels, cols, rows}}})
+      mod.onUpdate({processGpuResult: {camerapixelarray: {pixels, cols, rows}}})
     }
     for (const id of ['btn-debug', 'btn-calib', 'btn-color', 'btn-depth', 'btn-undo', 'btn-clear']) {
       document.getElementById(id).click()
     }
     // Once more with the debug overlay enabled, to cover the overlay drawing path.
-    mod.onUpdate({processCpuResult: {camerapixelarray: {pixels, cols, rows}}})
+    mod.onUpdate({processGpuResult: {camerapixelarray: {pixels, cols, rows}}})
     return {ok: true}
   } catch (e) {
     return {ok: false, why: String((e && e.stack) || e)}

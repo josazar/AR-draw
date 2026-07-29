@@ -123,6 +123,10 @@ Tout est dans [`src/config.js`](src/config.js) :
 
 ## Tests
 
+Deux niveaux, tous deux exécutables sans téléphone.
+
+### 1. Smoke + unitaire — moteur simulé
+
 ```bash
 npm i -D playwright && npx playwright install chromium   # une fois
 npm run serve                                            # dans un autre terminal
@@ -131,10 +135,55 @@ npm run smoke -- http://127.0.0.1:5173/
 
 20 assertions : câblage du pipeline, chargement réel de MediaPipe, invariance d'échelle du
 pincement, bijectivité des 8 calibrations, construction et cycle de vie des tubes. Le moteur 8th
-Wall est simulé, donc pas besoin de caméra.
+Wall est stubbé (et bloqué au niveau réseau, pour que le résultat ne dépende pas de sa
+disponibilité), donc aucune caméra n'est nécessaire.
 
-Ce que les tests **ne** couvrent pas, et qui demande un vrai iPhone : la qualité du SLAM, le choix
-de calibration correct, la fluidité réelle, et l'ergonomie du geste.
+### 2. Intégration — vrai moteur, caméra factice
+
+Celui-ci lance **toute** l'application : vrai moteur 8th Wall, vrai SLAM, vrai MediaPipe. Seule la
+caméra est simulée, via le périphérique de capture factice de Chromium.
+
+```bash
+npm i -D playwright @8thwall/engine-binary @8thwall/xrextras @8thwall/landing-page
+npx playwright install chromium
+
+npm run vendor:engine                          # sert le moteur depuis notre origine
+node test/make-fake-camera.mjs /tmp/fake.y4m   # damier animé
+npm run serve                                  # dans un autre terminal
+npm run live -- http://127.0.0.1:5173/ /tmp/fake.y4m live.png
+```
+
+Il affiche l'état interne seconde par seconde (frames, main détectée, pincements, profondeur,
+position caméra) et produit une capture d'écran. **C'est ce test qui a trouvé le bug le plus
+sérieux du projet** : `camerapixelarray` est publié sur `processGpuResult`, pas
+`processCpuResult` — le suivi de main ne recevait aucune image.
+
+Deux détails qui coûtent du temps si on ne les connaît pas :
+
+- Il faut **émuler un mobile** (`devices['iPhone 13']`), sinon la *LandingPage* de 8th Wall
+  détecte un navigateur desktop et remplace l'app par un écran « scannez ce QR code ».
+- Le moteur doit être servi **depuis la même origine** (`npm run vendor:engine`) ; `.env.local`
+  bascule les `<script>` du CDN vers `public/vendor/`. Supprimer ce fichier pour revenir au CDN.
+
+#### Tester le dessin pour de vrai
+
+Le damier ne contient pas de main, donc `framesWithHand` reste à 0. Pour exercer la chaîne
+complète pincement → tube, filmez votre propre main en train de pincer et convertissez le clip
+(le y4m n'est pas compressé, restez court) :
+
+```bash
+ffmpeg -i main.mov -t 10 -s 640x480 -pix_fmt yuv420p /tmp/main.y4m
+npm run live -- http://127.0.0.1:5173/ /tmp/main.y4m live.png
+```
+
+`framesWithHand`, `pinchEvents` et `strokes` doivent alors monter.
+
+### Ce que rien de tout ça ne remplace
+
+Un vrai iPhone reste nécessaire pour : la **qualité du SLAM** (une vidéo synthétique n'a pas de
+parallaxe, la caméra ne bouge donc pas dans la scène), le **bon état de calibration**, la
+**fluidité réelle** (le WebGL logiciel en headless tourne à ~2 fps, non représentatif) et
+l'**ergonomie du geste**.
 
 ## Limites connues
 
